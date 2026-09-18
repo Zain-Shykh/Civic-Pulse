@@ -1,1 +1,1 @@
-Architecture Decision Records: provider interface, frontend runtime config, deploy-by-SHA, PII/data governance.
+Architecture Decision Records: provider interface, frontend runtime config, deploy-by-SHA, PII/data governance, `/ready` layering exception.

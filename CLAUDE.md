@@ -17,6 +17,8 @@ Dependency arrows point one way only: `routes/` → `services/` → `repositorie
 
 **A route that opens a database session is a design failure worth marks**, not a style nitpick. The moment a route touches the DB directly: the HTTP layer now knows about SQL, the business rules can no longer be tested without a live database, and the persistence strategy can't change without touching every route that used it. The four layers exist precisely so each one can be replaced or unit-tested in isolation — that's decomposition and abstraction (Lecture 01, Era 3/5) applied to code we actually wrote, not left as slideware.
 
+**One scoped exception exists:** `GET /health` and `GET /ready` call `app/db.py`/`app/providers/cache.py` directly (raw reachability checks only) — see `docs/adr/0005-ready-endpoint-layering-exception.md`. This applies to those two routes only; every other route follows the rule with no exceptions.
+
 ## Non-negotiables — automatic deductions (§5.3, verbatim)
 
 - A .env, key, token or password anywhere in Git history — −20, plus you must rotate the credential and write an incident note

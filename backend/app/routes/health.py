@@ -1,12 +1,11 @@
 """GET /health and GET /ready — the walking-skeleton routes for this phase.
 
-Deliberate scoping note (flagged to the human, not silently decided): the
-four-layer rule says routes don't touch the DB directly, but this phase was
-scoped to have no services/ or repositories/ content yet. /ready's raw
-connectivity probe (app.db.ping / app.providers.cache.ping) is treated as
-an infrastructure liveness concern, not a business-rule query, and is the
-narrowest possible exception to the rule for that reason. Revisit if a
-future phase wants this routed through a service instead.
+/ready calls app.db.ping / app.providers.cache.ping directly, bypassing
+services/ and repositories/. This is a deliberate, scoped exception to the
+four-layer rule in CLAUDE.md — see docs/adr/0005-ready-endpoint-layering-
+exception.md for the full justification and scope. It applies ONLY to these
+two routes and ONLY to raw reachability checks; no other route gets this
+exception.
 """
 
 from fastapi import APIRouter, Response, status

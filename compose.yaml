@@ -1,0 +1,105 @@
+# Dev compose: build: from local Dockerfiles, backend hot-reload via bind
+# mount. See compose.prod.yaml for the deploy-time shape (image: + tag,
+# no build:, no dev bind mount) — docs/adr/0003-deploy-by-sha.md.
+networks:
+  edge: # frontend <-> backend
+    driver: bridge
+  internal: # backend <-> postgres <-> redis; no route to the outside world
+    driver: bridge
+    internal: true
+
+volumes:
+  pgdata: # PostgreSQL data directory — the durable one
+  redisdata: # AOF persistence (docs/CONTRACTS.md, Redis persistence)
+  ollama_models: # model weights, so they aren't re-pulled on every up (Ollama not wired up yet)
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: civicpulse-frontend:dev
+    networks:
+      - edge
+    ports:
+      - "8080:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: civicpulse-backend:dev
+    # The only service that bridges edge and internal (docs/architecture/ARCHITECTURE.md)
+    networks:
+      - edge
+      - internal
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      # Dev-only: mounts source for hot reload. Right here, wrong in
+      # compose.prod.yaml — prod runs the image as built, not live source.
+      - ./backend/app:/app/app:ro
+    command:
+      ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  postgres:
+    image: postgres:16-alpine
+    networks:
+      - internal
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  redis:
+    image: redis:7-alpine
+    networks:
+      - internal
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M

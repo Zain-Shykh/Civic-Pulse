@@ -10,11 +10,13 @@ Everything below is left open by the assignment on purpose. Each is a question f
 | 2 | Backend framework | FastAPI |
 | 3 | K8s manifest tool | Kustomize |
 | 4 | Local cluster | k3d |
+| 5 | PII stance | Hybrid redaction — see `docs/adr/0004-pii-and-data-governance.md` (Accepted) |
+| 6 | Repository / product name | CivicPulse (confirmed, no rename) |
+| 7 | Rate-limiter algorithm | Fixed-window |
+| 8 | Load-test tool | k6 |
 | 9 | Scope given team status | Full assignment scope, self-paced timeline — see note in §9 below |
 
-Still open: 5 (PII stance — now scoped to Gemini specifically, see `docs/adr/0004-pii-and-data-governance.md`), 6 (repo name), 10 (bonus items).
-
-Proposed but not yet decided (human approval required): 7 (rate-limiter algorithm), 8 (load-test tool).
+Still open: 10 (bonus items) — revisit before the CI/CD phase.
 
 ## 1. LLM provider choice — RESOLVED
 
@@ -54,33 +56,33 @@ Spec (§3.3), kept for reference: "Manifests, organised with Kustomize (base/ pl
 
 Spec (§3.3), kept for reference: "Local cluster: k3d or kind — both run inside Docker, both are free, both work on a student laptop. A managed cloud cluster is not required and earns no extra marks."
 
-## 5. PII handling stance
+## 5. PII handling stance — RESOLVED
 
-Spec (§2.5): "Citizen complaints contain names, addresses and phone numbers. Write the resulting PII decision into an ADR — redact before sending, send only the complaint body, or accept and document the exposure." This is explicitly named as one of the four required ADRs (§4, Category J), and is now a live decision, not a hypothetical one — decision 1 fixed the provider as **Gemini**, whose free tier the spec says "may use your inputs to improve its models."
+**Decided:** Hybrid regex-based redaction (phone numbers, email addresses) applied to `text` only, before it reaches Gemini; `location` sent unmodified. Full detail, residual-risk statement, and layer ownership in `docs/adr/0004-pii-and-data-governance.md` (status: Accepted).
 
-**Question:** Which stance — (a) redact PII from complaint text before it reaches Gemini, (b) send only the complaint body and accept whatever residual PII is embedded in the free text, or (c) accept and explicitly document the exposure? This gates what `LLMTriage` is allowed to send to Gemini over the wire, and is the actual content of the required PII ADR.
+Spec (§2.5), kept for reference: "Citizen complaints contain names, addresses and phone numbers. Write the resulting PII decision into an ADR — redact before sending, send only the complaint body, or accept and document the exposure."
 
-## 6. Repository / product name
+## 6. Repository / product name — RESOLVED
 
-Spec (§1.2): "You may rename the product. Keep the contracts in §2 — they are what gets tested." The current repo folder is `assign_1`; the assignment's own layout example uses `civicpulse/` as the root folder name.
+**Decided:** Keep "CivicPulse." No rename.
 
-**Question:** Keep "CivicPulse" as the product/repo name, or rename? (Contracts in `docs/CONTRACTS.md` are unaffected either way.)
+Spec (§1.2), kept for reference: "You may rename the product. Keep the contracts in §2 — they are what gets tested."
 
-## 7. Rate-limiter algorithm — PROPOSED, not decided
+## 7. Rate-limiter algorithm — RESOLVED
 
-Spec (§2.4, Job 2): "A fixed-window or token-bucket counter in Redis, keyed by client IP." Both satisfy the letter of the contract (429 + `Retry-After` on `POST /api/complaints`); they differ in burst behaviour and implementation complexity.
+**Decided:** Fixed-window. Reasoning (human's own): the requirement here is quota protection, not traffic smoothing — a fixed-window counter (`INCR` + `EXPIRE` in Redis) is simple and easier to test deterministically than a Lua-scripted token bucket, and quota protection is exactly what §2.4 Job 2 is for (stopping a bored user's `for` loop from exhausting the free-tier LLM quota, not shaping traffic curves).
 
-**Proposal: fixed-window.** A fixed-window counter is a single `INCR` + `EXPIRE` per request — trivial to implement correctly and to reason about at viva. Token-bucket is smoother (no burst-at-boundary artifact) but needs atomic multi-step logic (a Lua script or a transaction) to avoid race conditions under concurrent requests, for a benefit that matters more at higher traffic volumes than this system will see. Fixed-window is the lower-risk choice for the marks actually on offer here (§4-E, 4 marks) — but this is a proposal, not a decision. **Awaiting your approval or override.**
+Spec (§2.4, Job 2), kept for reference: "A fixed-window or token-bucket counter in Redis, keyed by client IP." Both satisfy the letter of the contract (429 + `Retry-After` on `POST /api/complaints`).
 
-## 8. Load-test tool — PROPOSED, not decided
+## 8. Load-test tool — RESOLVED
 
-Spec (§3.3, HPA deliverable): "generate load with k6 or hey."
+**Decided:** k6. Reasoning (human's own): matches the repo's own `load/k6-script.js` path already named in §5.7, and supports ramping virtual users — needed to actually produce the replicas-vs-load chart the rubric requires (§4-H), which a single-shot tool like `hey` doesn't model well.
 
-**Proposal: k6.** The §5.7 repository layout already names `load/k6-script.js` — the assignment's own scaffolding assumes k6. It's also more expressive for the load shape this system actually needs (a mix of `POST /api/complaints` and `GET /api/stats` with realistic pacing), where `hey`'s single-endpoint repeated-request model would need multiple separate invocations pieced together. **Awaiting your approval or override.**
+Spec (§3.3, HPA deliverable), kept for reference: "generate load with k6 or hey."
 
 ## 9. Scope configuration given team status — RESOLVED
 
-**Decided:** There is a real 2-person team on paper; the partner is not currently active but is expected to join later, at which point slices from `docs/PARALLEL-WORK-PLAN.md` will be handed to them. Timeline: self-paced, ignoring the assignment's own conflicting 2-week/4-week framing (§5.1) — build to the full assignment scope (not the "split into two assignments" hedge) at whatever pace actually works.
+**Decided:** There is a real 2-person team on paper; a specific person will probably join, but he has not started and there is no confirmed date. When and if he does, slices from `docs/PARALLEL-WORK-PLAN.md` will be handed to him. Timeline: self-paced, ignoring the assignment's own conflicting 2-week/4-week framing (§5.1) — build to the full assignment scope (not the "split into two assignments" hedge) at whatever pace actually works.
 
 **Residual risk, not eliminated by this decision:** Category A's partner-dependent line items (≥5 PRs with the partner's substantive review, the 35% commit-share floor, a real two-author merge conflict) still require the partner to actually contribute for a nontrivial stretch of time before submission — deciding "he'll join later" doesn't manufacture that history retroactively. If he joins late, those items may still need to be compressed into whatever time remains. Tracked in `docs/RUBRIC-CHECKLIST.md`.
 

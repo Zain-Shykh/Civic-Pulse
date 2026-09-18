@@ -64,10 +64,6 @@ There is a real 2-person team on paper; a specific person will probably join, bu
 - Load testing tool: k6 or hey
 
 **Still open — see `docs/OPEN-DECISIONS.md`, do not decide without me:**
-- PII handling stance for Gemini specifically (redact / send-as-is / accept-and-document) — see `docs/adr/0004-pii-and-data-governance.md`, decision pending
-- Repository/product name (spec explicitly permits renaming CivicPulse)
-- Which bonus items (if any) to pursue
+- Which bonus items (if any) to pursue (§4 Bonus, `docs/OPEN-DECISIONS.md` #10) — revisit before the CI/CD phase.
 
-**Proposed, awaiting approval (`docs/OPEN-DECISIONS.md` §7–8):** fixed-window rate limiter; k6 for load testing.
-
-**Resolved:** LLM provider is Gemini (`gemini-3.1-flash-lite`); backend is FastAPI; k8s manifests via Kustomize; local cluster is k3d; scope is the full assignment, self-paced, not the "split into two assignments" hedge (see `docs/OPEN-DECISIONS.md`).
+**Resolved:** LLM provider is Gemini (`gemini-3.1-flash-lite`); backend is FastAPI; k8s manifests via Kustomize; local cluster is k3d; rate limiter is fixed-window; load-test tool is k6; PII stance is hybrid redaction (`docs/adr/0004-pii-and-data-governance.md`); product name stays CivicPulse; scope is the full assignment, self-paced, not the "split into two assignments" hedge. See `docs/OPEN-DECISIONS.md` for full reasoning on each.

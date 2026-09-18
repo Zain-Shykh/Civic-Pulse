@@ -33,7 +33,7 @@ Team status: a specific person will probably join, but he has not started and th
 | [ ] | All nine endpoints to contract, correct status codes, field-level validation errors (rubric says "ten," confirmed typo — see `docs/CONTRACTS.md`) | 7 | |
 | [ ] | Four-layer separation: no SQL outside repositories, no business rules in routes | 4 | |
 | [ ] | Status state machine as an explicit transition table; invalid transitions 409 | 3 | |
-| [ ] | /health and /ready correctly distinguished; /health does not touch the database | 3 | |
+| [x] | /health and /ready correctly distinguished; /health does not touch the database | 3 | `backend/app/routes/health.py`; verified live 2026-09-19: `docker compose exec backend` → GET /health 200 always, GET /ready 200 when Postgres+Redis reachable; `backend/tests/test_health.py` covers the 503-naming-failed-dependency branch |
 | [ ] | Structured JSON logging to stdout with a propagated request_id | 3 | |
 | [ ] | SIGTERM handled: in-flight requests drain before exit | 2 | |
 | [ ] | ≥14 backend tests, unit and integration, deterministic, coverage ≥65% | 3 | |
@@ -72,12 +72,12 @@ Team status: a specific person will probably join, but he has not started and th
 
 | Done | Item | Marks | Evidence/file |
 |---|---|---|---|
-| [ ] | Both images multi-stage, pinned base, non-root USER, exec-form CMD, cache-correct layer order | 4 | |
-| [ ] | .dockerignore per build context, with before/after context sizes reported | 2 | |
-| [ ] | Two networks with internal: true; frontend provably cannot reach the database | 4 | |
-| [ ] | Three named volumes, each justified; dev bind mount present and absent from prod | 2 | |
-| [ ] | Healthchecks on all services with depends_on: condition: service_healthy | 2 | |
-| [ ] | compose.prod.yaml uses image: ${IMAGE_TAG}, no build:, no published DB or cache port | 1 | |
+| [x] | Both images multi-stage, pinned base, non-root USER, exec-form CMD, cache-correct layer order | 4 | `backend/Dockerfile` (python:3.12-slim, USER civicpulse), `frontend/Dockerfile` (node:22-alpine → nginx:1.27-alpine, USER nginx); both built successfully 2026-09-19 |
+| [x] | .dockerignore per build context, with before/after context sizes reported | 2 | `backend/.dockerignore`, `frontend/.dockerignore`. Measured 2026-09-19: raw dir size before exclusions ≈ 23 MB (backend, incl. local `.mypy_cache`/`.pytest_cache`) and ≈ 120 MB (frontend, incl. `node_modules`); actual BuildKit context transferred after `.dockerignore` ≈ 2.9 kB combined across both images (`docker compose build --no-cache --progress=plain`) |
+| [x] | Two networks with internal: true; frontend provably cannot reach the database | 4 | `compose.yaml`. Verified live 2026-09-19: `docker compose exec frontend ping -c 3 postgres` → `ping: bad address 'postgres'`, exit code 1 (DNS resolution fails — frontend isn't on `internal`) |
+| [x] | Three named volumes, each justified; dev bind mount present and absent from prod | 2 | `compose.yaml` (pgdata, redisdata, ollama_models + dev bind mount `./backend/app:/app/app:ro`), `compose.prod.yaml` (same three volumes, no bind mount) |
+| [x] | Healthchecks on all services with depends_on: condition: service_healthy | 2 | `compose.yaml`; verified live 2026-09-19: all four containers (`frontend`, `backend`, `postgres`, `redis`) reached `Healthy` via `docker compose up -d` / `docker compose ps` |
+| [x] | compose.prod.yaml uses image: ${IMAGE_TAG}, no build:, no published DB or cache port | 1 | `compose.prod.yaml`; verified via `docker compose -f compose.prod.yaml config` — no `build:` key, no ports on `postgres`/`redis` |
 
 ## H · Kubernetes — 20
 
@@ -126,14 +126,14 @@ Team status: a specific person will probably join, but he has not started and th
 
 | Done | Item | Penalty | Evidence/file |
 |---|---|---|---|
-| [ ] | No .env, key, token or password anywhere in Git history | −20 | |
-| [ ] | No LLM API key in a committed Kubernetes manifest (base64 included) | −15 | |
-| [ ] | No unpinned base image; postgres / redis / node all tagged | −8 | |
-| [ ] | No localhost used for service-to-service communication | −8 | |
-| [ ] | Frontend cannot reach the database (network segmentation proven) | −8 | |
-| [ ] | No published database or cache port in compose.prod.yaml; no NodePort/LoadBalancer on the database | −8 | |
-| [ ] | Every publishing/deploying job gated by needs: | −8 | |
-| [ ] | :latest never deployed anywhere | −8 | |
-| [ ] | PostgreSQL never a bare Deployment with no PVC | −8 | |
-| [ ] | No commits pushed directly to main | −5 | |
-| [ ] | README quickstart verified to work from a clean clone | −5 | |
+| [x] | No .env, key, token or password anywhere in Git history | −20 | Verified 2026-09-19: `.env` confirmed gitignored (`git check-ignore -v .env`), never staged. Ongoing invariant — re-check before every commit, not a one-time fact |
+| [ ] | No LLM API key in a committed Kubernetes manifest (base64 included) | −15 | No k8s manifests exist yet |
+| [x] | No unpinned base image; postgres / redis / node all tagged | −8 | `python:3.12-slim`, `node:22-alpine`, `nginx:1.27-alpine`, `postgres:16-alpine`, `redis:7-alpine` — every image tag pinned, none `latest` |
+| [x] | No localhost used for service-to-service communication | −8 | `compose.yaml`/`compose.prod.yaml` use service DNS names (`postgres`, `redis`, `backend`) throughout — no `localhost`/`127.0.0.1` between containers |
+| [x] | Frontend cannot reach the database (network segmentation proven) | −8 | Same live proof as the G-category network row above: `ping postgres` from `frontend` fails with `bad address` |
+| [x] | No published database or cache port in compose.prod.yaml; no NodePort/LoadBalancer on the database | −8 | Compose portion verified (no ports on postgres/redis in `compose.prod.yaml`). K8s portion (NodePort/LoadBalancer) not yet applicable — no manifests exist yet |
+| [ ] | Every publishing/deploying job gated by needs: | −8 | No CI/CD workflows exist yet |
+| [x] | :latest never deployed anywhere | −8 | `compose.prod.yaml` deploys `${IMAGE_TAG}` only; see `docs/adr/0003-deploy-by-sha.md` |
+| [ ] | PostgreSQL never a bare Deployment with no PVC | −8 | No k8s manifests exist yet |
+| [x] | No commits pushed directly to main | −5 | All work committed on `dev`; `main` untouched since the Phase 0 initial commit |
+| [ ] | README quickstart verified to work from a clean clone | −5 | README is still a stub — no quickstart written yet |

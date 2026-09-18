@@ -1,0 +1,42 @@
+# --- Secrets ---
+.env
+.env.*
+!.env.example
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# --- Node ---
+node_modules/
+dist/
+.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.eslintcache
+
+# --- Docker ---
+*.log
+
+# --- Kubernetes / kustomize ---
+kubeconfig
+*.kubeconfig
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+
+# --- Load test output ---
+load/results/

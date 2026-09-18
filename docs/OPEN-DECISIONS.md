@@ -15,6 +15,15 @@ Still open: 2 (FastAPI vs Flask), 3 (Kustomize vs Helm), 4 (k3d vs kind), 5 (PII
 
 **Decided:** Google Gemini API, model `gemini-3.1-flash-lite`. `LLMTriage` is built against Gemini's API; no need to also implement a Groq path.
 
+**Free-tier verification (checked 2026-09-19), per the spec's own instruction to "cite what you actually saw":**
+
+- Fetched `https://ai.google.dev/gemini-api/docs/pricing` directly (Google's own current pricing page, not a third-party aggregator). Its free-tier table lists **Gemini 3.1 Flash-Lite** with pricing explicitly marked **"Free of charge"** for input/output tokens — confirmed as free-tier eligible, not a paid-only preview model. (Gemini 2.5 Flash-Lite is also listed as free-tier eligible on the same page, as a fallback if 3.1 Flash-Lite is ever pulled from free tier.)
+- Fetched `https://ai.google.dev/gemini-api/docs/rate-limits` directly. This page does **not** publish a static per-model free-tier RPM/TPM/RPD table — it states rate limits depend on account tier and directs to the live dashboard at `https://aistudio.google.com/rate-limit`. So the exact numeric limit could not be pulled from Google's own docs in this session.
+- Cross-referenced several independent third-party trackers (not Google's own docs, so weaker evidence, but consistent with each other): they converge on **15 requests/minute, 1,000 requests/day** for Gemini 3.1 Flash-Lite's free tier, and confirm **no credit card / no Google Cloud billing account is required** to obtain a free-tier API key via Google AI Studio — matching the assignment's own claim about Gemini's free tier (§2.5).
+- Confirmed from Google's own pricing page and corroborated by third-party sources: **on the free tier, Google may use inputs to improve its models** — this is the same caveat the assignment names, and it's what makes decision 5 (PII stance) a live decision rather than boilerplate.
+
+**Action before Phase 1 backend work starts:** get an actual API key from Google AI Studio and read the live numbers at `aistudio.google.com/rate-limit` directly — that dashboard, not any doc page, is Google's authoritative source for the account's real current limits. Record whatever is seen there in this file, replacing the 15 RPM / 1,000 RPD figure above with the confirmed number.
+
 Spec's own framing (§2.5), kept for reference:
 
 - **Groq** — "recommended primary." OpenAI-compatible endpoint (official `openai` SDK works via `base_url`). Free tier gated only by rate limits, applied at the org level and per model, no credits/billing. Fast inference — "matters when a citizen is watching a spinner."

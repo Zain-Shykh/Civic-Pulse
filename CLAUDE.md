@@ -42,12 +42,12 @@ Check every one of these before any commit touching secrets, images, networking,
 
 ## Solo-first, partner-ready
 
-There is a real 2-person team on paper; my partner is not currently active and is expected to join later. I'm working solo until then, and the project must work either way without rework. In practice:
+There is a real 2-person team on paper; a specific person will probably join, but he has not started and there is no confirmed date. I'm working solo until then, and the project must work either way without rework. In practice:
 
 - Keep the four backend layers, and the frontend/backend/infra boundary, genuinely clean — not just labeled. Each natural module (frontend, backend AI/triage layer, backend CRUD/API layer, k8s manifests, CI/CD) must be handable to a second person as a self-contained task without them needing to touch code outside it.
 - Every cross-module boundary is exactly the contract recorded in `docs/CONTRACTS.md` — the API table, the DB schema, the `TriageProvider` interface, the cache/rate-limit behaviour. Changing one of those is a decision to flag, never a side-effect of an unrelated change.
-- `docs/PARALLEL-WORK-PLAN.md` is the draft list of task slices to hand to my partner when he joins, with what each depends on and which interface it must respect.
-- Category A (collaboration, 15 marks) contains line items that need a real, sustained second contributor — partner PR reviews, a commit-share floor, a genuine two-author merge conflict. Deciding "he'll join later" doesn't manufacture that history retroactively; these stay tracked as risk in `docs/RUBRIC-CHECKLIST.md` until he's actually contributing.
+- `docs/PARALLEL-WORK-PLAN.md` is the draft list of task slices to hand to him if and when he joins, with what each depends on and which interface it must respect.
+- Category A (collaboration, 15 marks) contains line items that need a real, sustained second contributor — partner PR reviews, a commit-share floor, a genuine two-author merge conflict. These are at risk **regardless of whether he eventually joins**: with no confirmed start date, there is a real chance he joins too late to build that history before submission. Track as risk in `docs/RUBRIC-CHECKLIST.md`, not as a solved problem.
 
 ## Tech stack
 

@@ -4,15 +4,17 @@ One row per scored line. `[ ]` unchecked / `[x]` done. Evidence/file column star
 
 ## A · Collaboration and version control — 15
 
+Team status: a specific person will probably join, but he has not started and there is no confirmed date. That status does **not** de-risk the lines below — a partner who joins with little runway left cannot retroactively produce weeks of review/commit/conflict history, so these stay AT RISK regardless of whether he eventually joins.
+
 | Done | Item | Marks | Evidence/file | Partner dependency |
 |---|---|---|---|---|
 | [ ] | main protected: no direct push, PR required, CI required, ≥1 approval; screenshot in docs/evidence/ | 3 | | Needs the partner active to approve PRs (or an instructor exception) |
 | [ ] | Two-branch model with dev plus feature branches; no work committed directly to main | 2 | | Achievable solo |
-| [ ] | ≥5 merged PRs, each linked to an Issue, each with a substantive review comment from your partner | 4 | | **Needs the partner actively reviewing** — at risk until he's onboarded |
-| [ ] | ≥35 commits, conventional prefixes (feat:, fix:, docs:…), neither partner below 35% by `git shortlog -sn` | 3 | | **Needs the partner contributing a real share** — the 35%-floor is unearnable if he joins too late to accumulate commits |
-| [ ] | One deliberate merge conflict on real code, resolved, with markers/resolution/merge evidence and 2–4 sentences on why that version won | 3 | | **Needs two divergent branches from two real contributors** — plan a task slice (see `docs/PARALLEL-WORK-PLAN.md`) that naturally overlaps with mine once he's on board |
+| [ ] | ≥5 merged PRs, each linked to an Issue, each with a substantive review comment from your partner | 4 | | **AT RISK regardless of eventual joining** — needs him actively reviewing across several PRs, not a one-time favor at the end |
+| [ ] | ≥35 commits, conventional prefixes (feat:, fix:, docs:…), neither partner below 35% by `git shortlog -sn` | 3 | | **AT RISK regardless of eventual joining** — the 35%-floor needs a real, sustained share of commits; a late joiner cannot hit 35% without either a large late push or the total commit count staying artificially low |
+| [ ] | One deliberate merge conflict on real code, resolved, with markers/resolution/merge evidence and 2–4 sentences on why that version won | 3 | | **AT RISK regardless of eventual joining** — needs two divergent branches from two real contributors working concurrently; not producible in a single late session |
 
-**Category A total at risk while the partner is inactive: up to 10/15 marks.** Decision recorded in `docs/OPEN-DECISIONS.md` §9: he's expected to join later and pick up slices from `docs/PARALLEL-WORK-PLAN.md`. Residual risk is timing, not whether he exists — if he joins late, these items must be compressed into whatever time remains.
+**Category A total at risk: up to 10/15 marks, unresolved.** Recorded in `docs/OPEN-DECISIONS.md` §9. Do not mark these as "will be fine, partner is coming" — with no confirmed join date, plan as if they may not be earned, and treat any actual early contribution from him as upside, not the baseline plan.
 
 ## B · Frontend — 18
 
@@ -107,7 +109,7 @@ One row per scored line. `[ ]` unchecked / `[x]` done. Evidence/file column star
 | [ ] | README.md: problem statement, badges, Mermaid architecture diagram, working one-command quickstart, API table, screenshots | 4 | | |
 | [ ] | Four ADRs: provider interface; frontend runtime config; deploy-by-SHA; PII/data governance | 4 | | |
 | [ ] | docs/RUNBOOK.md: how to deploy, roll back, read logs, and what to do when triage starts failing | 2 | | |
-| [ ] | Demo video ≤5 minutes, both partners speaking, covering clean clone → running system, AI triage, fallback, network isolation failing, HPA scaling, rollback | 3 | | **"Both partners speaking" needs the partner on board by recording time** |
+| [ ] | Demo video ≤5 minutes, both partners speaking, covering clean clone → running system, AI triage, fallback, network isolation failing, HPA scaling, rollback | 3 | | **AT RISK regardless of eventual joining** — needs him actually present and speaking by recording time, which has no confirmed date |
 | [ ] | docs/ENGINEERING-NOTES.md answering all eight questions in §5.2 with file-and-line references | 2 | | |
 
 ## Bonus — capped at +15

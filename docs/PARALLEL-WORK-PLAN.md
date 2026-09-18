@@ -47,4 +47,8 @@ The seams follow the four backend layers (`CLAUDE.md`) plus the frontend/infra s
 
 ## Suggested split if/when a partner joins
 
+A specific person will probably join the project, but he has not started and there is no confirmed date — this plan has to work whether he joins in week 1, week 3, or never.
+
 Two people, cutting along the seam with the least cross-talk: **frontend** as one person's track end-to-end (its only dependency is a stable contract, not stable code), and **backend + AI + data + infra** as the other's — or, if the second person is also backend-capable, split **AI/triage providers** (fully isolated) from **API layer + data layer + infra** as the second track. Avoid splitting along "backend vs infra" as the first cut — infra depends on backend's container contract being settled first, so it's a bad slice to hand off in parallel from day one.
+
+**On timing:** the later he joins, the less runway there is to build the Category A collaboration evidence (§4-A) that needs sustained two-person history — merged PRs with his review, a commit-share floor, a real merge conflict. Handing him a slice from this plan the moment he's available is necessary but not sufficient; those rubric lines need contribution *over time*, not a single late burst of activity. See `docs/RUBRIC-CHECKLIST.md`.

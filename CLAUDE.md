@@ -53,23 +53,21 @@ There is a real 2-person team on paper; a specific person will probably join, bu
 
 **Fixed by the spec — do not relitigate:**
 - Frontend: React 18 + Vite + TypeScript, multi-stage build, served by nginx:alpine
-- Backend: FastAPI + Pydantic v2 (recommended) or Flask (permitted, must be declared in README)
+- Backend: FastAPI + Pydantic v2
 - Database: PostgreSQL 16, schema managed by Alembic migrations only — no DDL in app startup
 - Cache: Redis 7, doing two jobs — read-through stats cache and a distributed rate limiter
 - AI layer: `TriageProvider` interface, ≥3 working implementations, selected by `TRIAGE_PROVIDER` env var (LLMTriage, OllamaTriage, RuleBasedTriage; SimulatedTriage required for CI determinism)
 - LLM provider: Google Gemini API, model `gemini-3.1-flash-lite`
 - Containers: two multi-stage Docker images, non-root, pinned base images, healthchecked
-- Orchestration: local Kubernetes cluster (k3d or kind), manifests via Kustomize (base + overlays/dev, overlays/prod) — or Helm, with an ADR justifying the choice
+- Orchestration: local Kubernetes cluster via k3d, manifests via Kustomize (base + overlays/dev, overlays/prod)
 - CI/CD: GitHub Actions — ci.yml, cd.yml, release.yml — images published to GHCR with an SBOM via Syft
 - Load testing tool: k6 or hey
 
 **Still open — see `docs/OPEN-DECISIONS.md`, do not decide without me:**
-- FastAPI vs Flask
-- Kustomize vs Helm
-- k3d vs kind
-- PII handling stance for Gemini specifically (redact / send-as-is / accept-and-document)
+- PII handling stance for Gemini specifically (redact / send-as-is / accept-and-document) — see `docs/adr/0004-pii-and-data-governance.md`, decision pending
 - Repository/product name (spec explicitly permits renaming CivicPulse)
-- Rate-limiter algorithm (fixed-window vs token-bucket)
-- Load-test tool choice, and which bonus items (if any) to pursue
+- Which bonus items (if any) to pursue
 
-**Resolved:** LLM provider is Gemini (`gemini-3.1-flash-lite`); scope is the full assignment, self-paced, not the "split into two assignments" hedge (see `docs/OPEN-DECISIONS.md` §9).
+**Proposed, awaiting approval (`docs/OPEN-DECISIONS.md` §7–8):** fixed-window rate limiter; k6 for load testing.
+
+**Resolved:** LLM provider is Gemini (`gemini-3.1-flash-lite`); backend is FastAPI; k8s manifests via Kustomize; local cluster is k3d; scope is the full assignment, self-paced, not the "split into two assignments" hedge (see `docs/OPEN-DECISIONS.md`).

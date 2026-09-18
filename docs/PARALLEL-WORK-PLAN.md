@@ -6,7 +6,7 @@ The seams follow the four backend layers (`CLAUDE.md`) plus the frontend/infra s
 
 ## Slice: Frontend (React + Vite + TS)
 
-- **Owns:** `frontend/` — submit view, dashboard, stats view, typed API client, runtime config (`/config.js` or nginx proxy, per `docs/OPEN-DECISIONS.md`), component tests.
+- **Owns:** `frontend/` — submit view, dashboard, stats view, typed API client, runtime config (nginx `/api` proxy, per `docs/adr/0002-frontend-runtime-config.md`), component tests.
 - **Depends on:** the backend's OpenAPI schema and the API contract in `docs/CONTRACTS.md` (routes, status codes, error shapes, the `X-Cache` header, the 409 transition-error body). Does not need a running backend to start — can build against a mocked/generated client from the OpenAPI schema once it's stable.
 - **Must respect:** owns zero business rules — no duplicated status-transition table, no duplicated category/priority lists. Anything like that belongs in the backend and is only *rendered* here.
 - **Interface it exposes to the rest of the system:** none — it's a leaf consumer.

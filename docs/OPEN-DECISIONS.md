@@ -7,9 +7,14 @@ Everything below is left open by the assignment on purpose. Each is a question f
 | # | Decision | Answer |
 |---|---|---|
 | 1 | LLM provider | Google Gemini API, model `gemini-3.1-flash-lite` |
+| 2 | Backend framework | FastAPI |
+| 3 | K8s manifest tool | Kustomize |
+| 4 | Local cluster | k3d |
 | 9 | Scope given team status | Full assignment scope, self-paced timeline — see note in §9 below |
 
-Still open: 2 (FastAPI vs Flask), 3 (Kustomize vs Helm), 4 (k3d vs kind), 5 (PII stance — now scoped to Gemini specifically), 6 (repo name), 7 (rate-limiter algorithm), 8 (load-test tool), 10 (bonus items).
+Still open: 5 (PII stance — now scoped to Gemini specifically, see `docs/adr/0004-pii-and-data-governance.md`), 6 (repo name), 10 (bonus items).
+
+Proposed but not yet decided (human approval required): 7 (rate-limiter algorithm), 8 (load-test tool).
 
 ## 1. LLM provider choice — RESOLVED
 
@@ -31,23 +36,23 @@ Spec's own framing (§2.5), kept for reference:
 - **Ollama** — zero-dependency, no key, no network, no rate limit, no PII leaving the machine. Still required as the offline `OllamaTriage` implementation regardless of which hosted provider is chosen (§2.5 requires ≥3 implementations including it).
 - **Other workable options**: OpenRouter free tier, Cloudflare Workers AI, Hugging Face Inference — not needed now that Gemini is chosen.
 
-## 2. FastAPI vs Flask
+## 2. FastAPI vs Flask — RESOLVED
 
-Spec (§2.2): "FastAPI + Pydantic v2 (recommended) or Flask (permitted; say so in the README)." FastAPI is recommended specifically because its OpenAPI schema is what the frontend's typed client is generated/checked against, and because Pydantic models validate both HTTP input and LLM output with one mental model.
+**Decided:** FastAPI. Reasoning (human's own): this is the spec's recommended path, and its auto-generated OpenAPI schema is what drives the frontend's typed API client — picking Flask would mean building that schema-to-client pipeline by hand for no offsetting benefit.
 
-**Question:** FastAPI (per the stated recommendation) or Flask? If Flask, what replaces the "OpenAPI schema drives the typed frontend client" requirement (§2.1 "Required engineering")?
+Spec (§2.2), kept for reference: "FastAPI + Pydantic v2 (recommended) or Flask (permitted; say so in the README)." FastAPI is recommended specifically because its OpenAPI schema is what the frontend's typed client is generated/checked against, and because Pydantic models validate both HTTP input and LLM output with one mental model.
 
-## 3. Kustomize vs Helm
+## 3. Kustomize vs Helm — RESOLVED
 
-Spec (§3.3): "Manifests, organised with Kustomize (base/ plus overlays/dev and overlays/prod). Helm is acceptable if you prefer it; say so in an ADR."
+**Decided:** Kustomize. Reasoning (human's own): matches the assignment's own §5.7 folder layout (`k8s/base` + `overlays/dev`, `overlays/prod`) exactly, with no extra templating tool to introduce.
 
-**Question:** Kustomize (the default path, matches the §5.7 repo layout as written) or Helm (requires its own ADR and a different `k8s/` layout than §5.7 shows)?
+Spec (§3.3), kept for reference: "Manifests, organised with Kustomize (base/ plus overlays/dev and overlays/prod). Helm is acceptable if you prefer it; say so in an ADR."
 
-## 4. k3d vs kind
+## 4. k3d vs kind — RESOLVED
 
-Spec (§3.3): "Local cluster: k3d or kind — both run inside Docker, both are free, both work on a student laptop. A managed cloud cluster is not required and earns no extra marks."
+**Decided:** k3d. Reasoning (human's own): faster iteration loop, and an easier local-registry story for the CI job that spins up an ephemeral cluster and deploys freshly built images into it.
 
-**Question:** k3d or kind, for both local dev and the ephemeral cluster spun up inside the `cd.yml` GitHub Actions runner?
+Spec (§3.3), kept for reference: "Local cluster: k3d or kind — both run inside Docker, both are free, both work on a student laptop. A managed cloud cluster is not required and earns no extra marks."
 
 ## 5. PII handling stance
 
@@ -61,17 +66,17 @@ Spec (§1.2): "You may rename the product. Keep the contracts in §2 — they ar
 
 **Question:** Keep "CivicPulse" as the product/repo name, or rename? (Contracts in `docs/CONTRACTS.md` are unaffected either way.)
 
-## 7. Rate-limiter algorithm
+## 7. Rate-limiter algorithm — PROPOSED, not decided
 
 Spec (§2.4, Job 2): "A fixed-window or token-bucket counter in Redis, keyed by client IP." Both satisfy the letter of the contract (429 + `Retry-After` on `POST /api/complaints`); they differ in burst behaviour and implementation complexity.
 
-**Question:** Fixed-window (simpler, allows a burst at window boundaries) or token-bucket (smoother, slightly more Redis logic)?
+**Proposal: fixed-window.** A fixed-window counter is a single `INCR` + `EXPIRE` per request — trivial to implement correctly and to reason about at viva. Token-bucket is smoother (no burst-at-boundary artifact) but needs atomic multi-step logic (a Lua script or a transaction) to avoid race conditions under concurrent requests, for a benefit that matters more at higher traffic volumes than this system will see. Fixed-window is the lower-risk choice for the marks actually on offer here (§4-E, 4 marks) — but this is a proposal, not a decision. **Awaiting your approval or override.**
 
-## 8. Load-test tool
+## 8. Load-test tool — PROPOSED, not decided
 
 Spec (§3.3, HPA deliverable): "generate load with k6 or hey."
 
-**Question:** k6 (JS-based, richer scripting, matches the `load/k6-script.js` path already named in §5.7) or hey (single static binary, simpler but less expressive)? Given §5.7 already names `load/k6-script.js`, k6 looks like the path of least resistance unless there's a reason to deviate.
+**Proposal: k6.** The §5.7 repository layout already names `load/k6-script.js` — the assignment's own scaffolding assumes k6. It's also more expressive for the load shape this system actually needs (a mix of `POST /api/complaints` and `GET /api/stats` with realistic pacing), where `hey`'s single-endpoint repeated-request model would need multiple separate invocations pieced together. **Awaiting your approval or override.**
 
 ## 9. Scope configuration given team status — RESOLVED
 

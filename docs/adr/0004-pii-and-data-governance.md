@@ -2,7 +2,7 @@
 
 ## Status
 
-**DECISION PENDING — awaiting human input.** This document lays out the options and their trade-offs honestly, per instruction. It does not choose one. Do not treat any option below as selected until the human fills in a Decision section.
+Accepted
 
 ## Context
 
@@ -12,29 +12,35 @@
 
 **What actually leaves the machine, today, with no mitigation:** the full complaint `text` field, verbatim, plus the `location` field, sent over HTTPS to Gemini's API for every complaint that goes through `LLMTriage` (i.e., every complaint, unless `TRIAGE_PROVIDER` is set to `ollama` or `rules`). `reporter_contact` is not currently sent (it isn't part of the `TriageProvider.triage(text, location)` call signature per `docs/CONTRACTS.md`), but PII embedded inside the free-text `text` field itself is sent regardless, because nothing currently distinguishes "the complaint" from "PII incidentally written inside the complaint."
 
-## Options
+## Decision
 
-### Option A — Redact PII from complaint text before it reaches Gemini
+**Hybrid: regex-based redaction of phone numbers and email addresses in `text`, `location` sent unmodified.**
 
-Run a PII-detection/redaction pass (e.g. regex for phone-number patterns, a small NER pass, or a simple named-entity blocklist approach) over `text` before it's sent to `LLMTriage`, replacing detected names/phone numbers/addresses with placeholders, and send the redacted version.
+Before `LLMTriage` sends a request to Gemini, it runs `text` through a redaction pass:
 
-- **Pros:** directly reduces what leaves the machine; the most defensible answer at viva if asked "what did you do about this"; aligns with data-minimization as a stated principle, not just a documented risk.
-- **Cons:** redaction is never perfect — regex-based phone/address detection has real false-negative rates, especially for addresses and for names that don't follow a recognizable pattern (e.g. "Ahmed's shop" — is "Ahmed" flagged?). A false sense of security is arguably worse than an honestly-documented exposure, if the redaction is assumed complete and isn't. Also adds a real preprocessing step with its own failure modes (over-redaction could damage classification quality — "call 0300-xxx" being stripped might remove context the model needs to judge urgency, e.g. a phone number pattern near "please call before entering, gas leak" carrying no classification-relevant signal but a street name plausibly does).
+- Detectable phone-number patterns are replaced with a fixed placeholder, e.g. `[REDACTED-PHONE]`.
+- Detectable email-address patterns are replaced with a fixed placeholder, e.g. `[REDACTED-EMAIL]`.
+- Whenever a redaction actually fires, log a structured event recording *that* a redaction happened and *which category* (phone / email) and a count — **never the matched substring, never the original value**. Same discipline as "never log the API key" (`CLAUDE.md`, §5.3-adjacent non-negotiables), extended to PII: the fact of redaction is observability data; the redacted value itself is exactly what we're trying to keep out of any log or third party.
+- `location` is sent to Gemini **unmodified**. `TriageProvider.triage(text, location)` requires it for triage quality (a street name plausibly affects urgency/category judgement — e.g. proximity to a hospital or school), and it is typically street-level ("Street 12"), not a full postal address with a name attached — a materially smaller exposure than the free-text body.
+- The redacted copy is what `LLMTriage` sends over the wire. The database record (`docs/CONTRACTS.md` schema, `text` column) always stores the citizen's original, unredacted submission — redaction is a property of the outbound Gemini call, not of what CivicPulse persists or displays on its own dashboard. Nothing about this decision touches storage or the operator-facing views.
 
-### Option B — Send only a scrubbed excerpt, not the full complaint body
+**Layer ownership:** this is a **provider-layer concern**, not a general sanitization rule. The redaction helper belongs in `backend/app/providers/triage/` (used specifically by `LLMTriage`, immediately before constructing the outbound request) — not in `services/`, not applied to what `OllamaTriage` or `RuleBasedTriage` receive (neither sends data outside the machine, so neither needs it), and not applied anywhere text is read back from the repository layer. Phase 2/3 scaffolding should create this as a small, provider-scoped module (e.g. `providers/triage/redaction.py`), not a project-wide text-sanitization utility.
 
-Send a bounded, lightly-processed version of the text (e.g. truncated, or with obvious contact-info patterns like phone numbers stripped, but without attempting full PII redaction) — narrower than Option A's ambition, framed as "reasonable effort" rather than "PII-safe."
+## Consequences
 
-- **Pros:** cheaper to implement and reason about than full redaction (e.g. a phone-number regex alone catches the most common case); doesn't claim more safety than it delivers.
-- **Cons:** still sends names and addresses embedded in free text, since only phone-number-shaped patterns are targeted; the "we tried" middle ground may be the hardest position to defend at viva, since it invites "why didn't you go further" without the full protection of Option A.
+**What this does not solve — stated explicitly, not buried:**
 
-### Option C — Accept and explicitly document the exposure
+- **Names typed into free text are not caught.** "Ahmed's shop" sends "Ahmed" to Gemini unchanged. Regex has no concept of a name; this would require NER (named-entity recognition), which is out of scope for this decision.
+- **A citizen who writes their own precise address into the complaint body is not caught.** Only `location` is treated as address-shaped and it isn't touched (by design, per the Decision above); a full address embedded in `text` (e.g. "I live at House 12, Street 4, near the mosque") passes through unmodified, same as a name would.
+- **Regex-based phone/email detection has real false negatives.** An unusually formatted number (e.g. spelled out, split across words, using an unexpected separator) will not match and will be sent unredacted.
+- **Regex-based detection also has false positives.** A non-phone-number string that happens to match a digit-grouping pattern (e.g. a reference number, a house number sequence) could be redacted unnecessarily — a availability/quality cost, not a privacy cost, but worth naming since it can degrade triage input.
 
-Send the complaint text to Gemini unmodified, and write plainly in this ADR (once decided) that PII in citizen-submitted text is sent to a third party whose free tier may use it for model improvement, why that's considered acceptable for this project's context (e.g.: this is a course assignment using synthetic/seeded demo data, not a real production deployment handling real citizens' real complaints; the seed data (`docs/CONTRACTS.md`, ≥30 realistic complaints) is fabricated, not real personal data), and what would need to change before this system could handle real complaints (e.g.: move to a paid tier with a no-training data agreement, or implement Option A properly, before any real deployment).
+**Why this residual risk is accepted rather than solved:** a full NER-based PII scrubber (the only realistic way to catch names and free-form addresses) is out of scope for a free-tier academic project processing non-production, fictional/seeded complaint data (`docs/CONTRACTS.md` seed requirement — ≥30 *realistic but fabricated* complaints). The cost of building and validating a proper NER pass is disproportionate to the actual data at risk here. This justification is scoped to this project as submitted; it would not hold for a real deployment handling real citizens' real complaints, where Option A/full redaction or a no-training-data paid tier would be the correct bar, not this one.
 
-- **Pros:** simplest to implement — zero preprocessing code, zero risk of redaction bugs or classification-quality regressions; honest rather than falsely reassuring; the spec explicitly allows this stance ("accept and document the exposure" is one of its own three named options, §2.5).
-- **Cons:** weakest privacy posture of the three; only defensible because this is coursework against seeded/synthetic data — the ADR would need to say that caveat out loud, not bury it, and the justification stops being valid the moment real citizen data is involved.
+**Operational consequence:** the redaction pass adds a small amount of provider-layer logic and a structured logging point, but no new dependency beyond the standard library's `re` module — no NER model, no third-party PII-detection service, keeping `LLMTriage` fast and dependency-light, consistent with the 10-second timeout budget (`docs/CONTRACTS.md`, AI layer engineering requirements).
 
-## What this ADR does not do
+## Alternatives considered
 
-It does not pick one of the above. `LLMTriage`'s implementation should not be started (beyond the interface/factory shape in ADR 0001) until this is resolved, since the choice changes what `LLMTriage` is allowed to do with its input before calling Gemini.
+- **Full redaction / NER-based scrubbing (would fully address Option A from the original draft of this ADR):** rejected as disproportionate — see Consequences above. Left as the documented upgrade path if this project ever needed to handle real citizen data.
+- **Truncation-only or "reasonable effort" scrubbing with no specific pattern targeting:** rejected as strictly worse than the chosen hybrid for the same implementation cost — targeting phone numbers and emails specifically catches the two most mechanically detectable, highest-confidence PII categories at effectively the same cost as vaguer truncation, without discarding potentially triage-relevant context the way blind truncation would.
+- **Accept and document with zero mitigation:** rejected as the sole answer — cheap and honest, but leaves the two most easily-caught PII categories (phone numbers, emails) exposed for free, when a two-regex pass removes most of that exposure at near-zero cost. The accept-and-document posture survives in this decision only for what the hybrid deliberately doesn't catch (names, embedded addresses), stated above, not as the entire policy.

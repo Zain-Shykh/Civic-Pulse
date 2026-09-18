@@ -52,7 +52,7 @@ Terminal states: `resolved`, `rejected`. Any transition not in the list above �
 | priority | enum: high · normal · low |
 | status | enum: open · in_progress · resolved · rejected, default open |
 | ai_summary | nullable — one line, ≤ 140 chars |
-| triaged_by | llm:groq · llm:ollama · rules · rules:fallback |
+| triaged_by | llm:groq · llm:ollama · rules · rules:fallback (pattern, not a fixed enum — see note below) |
 | triage_latency_ms | integer — you cannot reason about cost or latency without measuring it |
 | created_at / updated_at | timestamptz, UTC |
 
@@ -65,6 +65,8 @@ Additional requirements from §2.3:
 > Persistence contract. docker compose down then up must preserve every row. On Kubernetes, deleting the Postgres pod must preserve every row. You will demonstrate both.
 
 > Schema managed by Alembic migrations — no CREATE TABLE in application startup code, ever.
+
+**Resolved reading of `triaged_by`'s listed values:** `llm:groq · llm:ollama · rules · rules:fallback` is a naming *pattern* — `llm:<provider>` — illustrated using Groq as the example hosted provider, not a fixed, closed enum. Since the actual chosen provider is Gemini (`docs/OPEN-DECISIONS.md` #1), `LLMTriage` records `triaged_by = "llm:gemini"`, following the same pattern with the actual provider name substituted. This is a deliberate, logged deviation from the spec's literal example value — see `docs/architecture/DEVIATIONS.md` and `docs/adr/0001-provider-interface.md`.
 
 ---
 

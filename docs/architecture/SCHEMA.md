@@ -24,7 +24,7 @@ erDiagram
     }
 ```
 
-> **Note on `triaged_by` values:** the schema table in §2.3 lists `llm:groq · llm:ollama · rules · rules:fallback` as the value set, but the chosen LLM provider is Gemini, not Groq (`docs/OPEN-DECISIONS.md` #1). Whether the recorded value should literally be `llm:gemini` (following the `llm:<provider>` pattern, but diverging from the spec's listed values) or kept as `llm:groq` regardless of actual provider (matching the spec's literal enum but misdescribing what happened) is flagged as an ambiguity, not decided here — see end-of-phase ambiguity list.
+> **Note on `triaged_by` values:** the schema table in §2.3 lists `llm:groq · llm:ollama · rules · rules:fallback` as a naming *pattern* (`llm:<provider>`), not a closed enum. Since the chosen LLM provider is Gemini, not Groq (`docs/OPEN-DECISIONS.md` #1), the recorded value is `llm:gemini`. Logged as a deliberate deviation in `docs/architecture/DEVIATIONS.md`.
 
 ## Indexes
 

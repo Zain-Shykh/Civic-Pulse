@@ -49,6 +49,6 @@ Each provider is a standalone class in its own module (`llm.py`, `ollama.py`, `r
 - **A dependency-injection framework:** the assignment's own architecture already provides the seam (env var → factory); adding a DI library is complexity with no corresponding requirement.
 - **An if/elif chain inside `services/`:** rejected outright — this is exactly the four-layer violation `CLAUDE.md` calls out: business-rule code would need to know provider construction details, and every future provider addition would mean editing `services/` instead of only adding a file.
 
-## Open item, not decided here
+## Resolved: `triaged_by` naming
 
-`triaged_by` values (`docs/CONTRACTS.md` schema) are `llm:groq · llm:ollama · rules · rules:fallback` — written before the provider choice was Gemini. Whether `LLMTriage` should record `triaged_by = "llm:gemini"` (consistent naming, diverges from the spec's literal listed values) or `"llm:groq"` (matches the spec's literal enum, misdescribes the actual provider) is flagged, not decided, here. See end-of-phase ambiguity list.
+`triaged_by` values (`docs/CONTRACTS.md` schema) are listed as `llm:groq · llm:ollama · rules · rules:fallback`. This is a naming **pattern** — `llm:<provider>` — illustrated with Groq as the example hosted provider, not a fixed, closed enum. `LLMTriage` records `triaged_by = "llm:gemini"`, following the pattern with the actual configured provider substituted in. This is a deliberate deviation from the spec's literal example value, logged in `docs/architecture/DEVIATIONS.md` for the viva paper trail.

@@ -4,15 +4,15 @@ One row per scored line. `[ ]` unchecked / `[x]` done. Evidence/file column star
 
 ## A · Collaboration and version control — 15
 
-| Done | Item | Marks | Evidence/file | Solo risk |
+| Done | Item | Marks | Evidence/file | Partner dependency |
 |---|---|---|---|---|
-| [ ] | main protected: no direct push, PR required, CI required, ≥1 approval; screenshot in docs/evidence/ | 3 | | Approval step requires a partner (or an instructor exception) |
+| [ ] | main protected: no direct push, PR required, CI required, ≥1 approval; screenshot in docs/evidence/ | 3 | | Needs the partner active to approve PRs (or an instructor exception) |
 | [ ] | Two-branch model with dev plus feature branches; no work committed directly to main | 2 | | Achievable solo |
-| [ ] | ≥5 merged PRs, each linked to an Issue, each with a substantive review comment from your partner | 4 | | **Requires partner — at risk if solo** |
-| [ ] | ≥35 commits, conventional prefixes (feat:, fix:, docs:…), neither partner below 35% by `git shortlog -sn` | 3 | | **Requires partner** — the 35%-floor clause is meaningless with one contributor; commit count alone is achievable solo |
-| [ ] | One deliberate merge conflict on real code, resolved, with markers/resolution/merge evidence and 2–4 sentences on why that version won | 3 | | **Requires partner** — a real conflict needs two divergent branches from two people; a solo-simulated conflict is weaker evidence |
+| [ ] | ≥5 merged PRs, each linked to an Issue, each with a substantive review comment from your partner | 4 | | **Needs the partner actively reviewing** — at risk until he's onboarded |
+| [ ] | ≥35 commits, conventional prefixes (feat:, fix:, docs:…), neither partner below 35% by `git shortlog -sn` | 3 | | **Needs the partner contributing a real share** — the 35%-floor is unearnable if he joins too late to accumulate commits |
+| [ ] | One deliberate merge conflict on real code, resolved, with markers/resolution/merge evidence and 2–4 sentences on why that version won | 3 | | **Needs two divergent branches from two real contributors** — plan a task slice (see `docs/PARALLEL-WORK-PLAN.md`) that naturally overlaps with mine once he's on board |
 
-**Category A total at risk if solo: up to 10/15 marks** (the two partner-review/conflict/floor items). Flagged in `CLAUDE.md` and `docs/OPEN-DECISIONS.md` §9 — decide early whether to pursue a partner, request an exception, or accept the loss.
+**Category A total at risk while the partner is inactive: up to 10/15 marks.** Decision recorded in `docs/OPEN-DECISIONS.md` §9: he's expected to join later and pick up slices from `docs/PARALLEL-WORK-PLAN.md`. Residual risk is timing, not whether he exists — if he joins late, these items must be compressed into whatever time remains.
 
 ## B · Frontend — 18
 
@@ -28,7 +28,7 @@ One row per scored line. `[ ]` unchecked / `[x]` done. Evidence/file column star
 
 | Done | Item | Marks | Evidence/file |
 |---|---|---|---|
-| [ ] | All ten endpoints to contract, correct status codes, field-level validation errors | 7 | See `docs/CONTRACTS.md` note — spec table lists 9, rubric says 10 |
+| [ ] | All nine endpoints to contract, correct status codes, field-level validation errors (rubric says "ten," confirmed typo — see `docs/CONTRACTS.md`) | 7 | |
 | [ ] | Four-layer separation: no SQL outside repositories, no business rules in routes | 4 | |
 | [ ] | Status state machine as an explicit transition table; invalid transitions 409 | 3 | |
 | [ ] | /health and /ready correctly distinguished; /health does not touch the database | 3 | |
@@ -102,12 +102,12 @@ One row per scored line. `[ ]` unchecked / `[x]` done. Evidence/file column star
 
 ## J · Documentation, portfolio and reflection — 15
 
-| Done | Item | Marks | Evidence/file | Solo risk |
+| Done | Item | Marks | Evidence/file | Partner dependency |
 |---|---|---|---|---|
 | [ ] | README.md: problem statement, badges, Mermaid architecture diagram, working one-command quickstart, API table, screenshots | 4 | | |
 | [ ] | Four ADRs: provider interface; frontend runtime config; deploy-by-SHA; PII/data governance | 4 | | |
 | [ ] | docs/RUNBOOK.md: how to deploy, roll back, read logs, and what to do when triage starts failing | 2 | | |
-| [ ] | Demo video ≤5 minutes, both partners speaking, covering clean clone → running system, AI triage, fallback, network isolation failing, HPA scaling, rollback | 3 | | **"Both partners speaking" requires a partner — at risk if solo** |
+| [ ] | Demo video ≤5 minutes, both partners speaking, covering clean clone → running system, AI triage, fallback, network isolation failing, HPA scaling, rollback | 3 | | **"Both partners speaking" needs the partner on board by recording time** |
 | [ ] | docs/ENGINEERING-NOTES.md answering all eight questions in §5.2 with file-and-line references | 2 | | |
 
 ## Bonus — capped at +15

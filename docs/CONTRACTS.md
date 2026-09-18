@@ -18,7 +18,7 @@ These are the pieces of the assignment that are *tested*, not merely described. 
 | GET | /ready | Readiness. 200 only if Postgres and Redis are both reachable; 503 naming the failed dependency. |
 | GET | /metrics | Prometheus text format: request count, request latency histogram, triage latency, fallback counter. |
 
-> Note: the rubric (§4, Category C) refers to "all ten endpoints to contract" but this table as written lists nine. Flagged in `docs/OPEN-DECISIONS.md` / ambiguity list — do not silently invent a tenth endpoint to make the count match.
+> Note: the rubric (§4, Category C) refers to "all ten endpoints to contract"; this table lists nine. Confirmed: the rubric's "ten" is a typo — nine is the authoritative count. Do not invent a tenth endpoint.
 
 Also from §2.2:
 

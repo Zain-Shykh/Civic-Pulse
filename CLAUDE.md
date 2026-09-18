@@ -42,12 +42,12 @@ Check every one of these before any commit touching secrets, images, networking,
 
 ## Solo-first, partner-ready
 
-I am currently working solo. A partner may join at any point during the project, or may never join — the project must work either way without rework. In practice:
+There is a real 2-person team on paper; my partner is not currently active and is expected to join later. I'm working solo until then, and the project must work either way without rework. In practice:
 
 - Keep the four backend layers, and the frontend/backend/infra boundary, genuinely clean — not just labeled. Each natural module (frontend, backend AI/triage layer, backend CRUD/API layer, k8s manifests, CI/CD) must be handable to a second person as a self-contained task without them needing to touch code outside it.
 - Every cross-module boundary is exactly the contract recorded in `docs/CONTRACTS.md` — the API table, the DB schema, the `TriageProvider` interface, the cache/rate-limit behaviour. Changing one of those is a decision to flag, never a side-effect of an unrelated change.
-- `docs/PARALLEL-WORK-PLAN.md` is the draft list of task slices a second person could pick up, with what each depends on and which interface it must respect.
-- Category A (collaboration, 15 marks) contains line items that are structurally unearnable solo — partner PR reviews, a commit-share floor, an individual viva on a partner's code. These are tracked as known risk in `docs/RUBRIC-CHECKLIST.md`, not a surprise to discover in week 4.
+- `docs/PARALLEL-WORK-PLAN.md` is the draft list of task slices to hand to my partner when he joins, with what each depends on and which interface it must respect.
+- Category A (collaboration, 15 marks) contains line items that need a real, sustained second contributor — partner PR reviews, a commit-share floor, a genuine two-author merge conflict. Deciding "he'll join later" doesn't manufacture that history retroactively; these stay tracked as risk in `docs/RUBRIC-CHECKLIST.md` until he's actually contributing.
 
 ## Tech stack
 
@@ -57,17 +57,19 @@ I am currently working solo. A partner may join at any point during the project,
 - Database: PostgreSQL 16, schema managed by Alembic migrations only — no DDL in app startup
 - Cache: Redis 7, doing two jobs — read-through stats cache and a distributed rate limiter
 - AI layer: `TriageProvider` interface, ≥3 working implementations, selected by `TRIAGE_PROVIDER` env var (LLMTriage, OllamaTriage, RuleBasedTriage; SimulatedTriage required for CI determinism)
+- LLM provider: Google Gemini API, model `gemini-3.1-flash-lite`
 - Containers: two multi-stage Docker images, non-root, pinned base images, healthchecked
 - Orchestration: local Kubernetes cluster (k3d or kind), manifests via Kustomize (base + overlays/dev, overlays/prod) — or Helm, with an ADR justifying the choice
 - CI/CD: GitHub Actions — ci.yml, cd.yml, release.yml — images published to GHCR with an SBOM via Syft
 - Load testing tool: k6 or hey
 
 **Still open — see `docs/OPEN-DECISIONS.md`, do not decide without me:**
-- LLM provider (Groq / Gemini / Ollama-only / OpenRouter / Cloudflare Workers AI / Hugging Face)
 - FastAPI vs Flask
 - Kustomize vs Helm
 - k3d vs kind
-- PII handling stance for whichever hosted LLM provider is chosen
+- PII handling stance for Gemini specifically (redact / send-as-is / accept-and-document)
 - Repository/product name (spec explicitly permits renaming CivicPulse)
 - Rate-limiter algorithm (fixed-window vs token-bucket)
-- Load-test tool choice, scope configuration given solo status, and which bonus items (if any) to pursue
+- Load-test tool choice, and which bonus items (if any) to pursue
+
+**Resolved:** LLM provider is Gemini (`gemini-3.1-flash-lite`); scope is the full assignment, self-paced, not the "split into two assignments" hedge (see `docs/OPEN-DECISIONS.md` §9).

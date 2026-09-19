@@ -197,6 +197,10 @@ def _row_params(
         complaint_text, location, reporter_contact, category, priority,
         status, ai_summary, triaged_by, triage_latency_ms, days_ago,
     ) = complaint
+    # Seed-only idempotency key, derived deterministically from complaint
+    # text so re-running this script always maps to the same row. Never use
+    # this scheme for real complaint creation — that path must use the DB's
+    # gen_random_uuid() default so every real id is fully random.
     complaint_id = uuid.uuid5(uuid.NAMESPACE_URL, f"civicpulse:seed:{complaint_text}")
     created_at = datetime.now(UTC) - timedelta(days=days_ago)
     updated_at = created_at if status == "open" else created_at + timedelta(hours=6)
@@ -208,6 +212,9 @@ def _row_params(
         "category": category,
         "priority": priority,
         "status": status,
+        # ai_summary/triaged_by/triage_latency_ms below are synthetic fixture
+        # values for local testing/demo variety — not the output of a real
+        # triage call.
         "ai_summary": ai_summary,
         "triaged_by": triaged_by,
         "triage_latency_ms": triage_latency_ms,

@@ -4,6 +4,8 @@ reproduced verbatim from that instruction, not reconstructed from the
 resulting code. See commit history and docs/RUBRIC-CHECKLIST.md for what
 was actually delivered against it.
 
+Process note: this phase predates `docs/WORKFLOW.md` and was backfilled rather than committed first.
+
 ## Spec (as given)
 
 Close out remaining open decisions and begin Phase 2 (project setup —

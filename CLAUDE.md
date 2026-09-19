@@ -37,10 +37,12 @@ Check every one of these before any commit touching secrets, images, networking,
 
 ## Workflow contract
 
-- Work happens in phases. Each phase gets a written spec first; I approve it before any code is written for that phase.
+- Work happens in phases, following the six-step lifecycle in `docs/WORKFLOW.md` (select → spec approved → spec committed → implement against the committed file → verify with real pasted output → audit before marking done). That file is the standing process; this section doesn't restate it.
+- **From Phase 5 onward: no phase gets implemented until its spec file exists in `docs/specs/` AND is committed.** No more backfilling specs after the fact.
 - Do not start a new phase until I explicitly say so — finishing one phase is not implicit permission to begin the next.
 - If the spec, or the assignment text, is ambiguous or underspecified, stop and ask. Do not guess and proceed — a wrong assumption compounds across every phase built on top of it.
 - No dependencies, scaffolding, or code beyond an approved phase's stated scope.
+- Before marking a phase done, audit it against `docs/WORKFLOW.md`'s three named failure modes: silent decisions, unverified claims, undisclosed scope creep.
 
 ## Solo-first, partner-ready
 

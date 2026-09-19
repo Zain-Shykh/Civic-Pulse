@@ -33,6 +33,9 @@ yarn-error.log*
 kubeconfig
 *.kubeconfig
 
+# --- Local tooling state ---
+.claude/
+
 # --- Editors / OS ---
 .vscode/
 .idea/

@@ -42,10 +42,10 @@ Team status: a specific person will probably join, but he has not started and th
 
 | Done | Item | Marks | Evidence/file |
 |---|---|---|---|
-| [ ] | Alembic migrations; zero schema DDL in application startup code | 4 | |
-| [ ] | Schema complete including triaged_by, ai_summary, triage_latency_ms, timestamptz | 3 | |
-| [ ] | Two indexes, each justified by a named query in your notes | 2 | |
-| [ ] | Idempotent seed of ≥30 realistic complaints; running it twice changes nothing | 3 | |
+| [x] | Alembic migrations; zero schema DDL in application startup code | 4 | `backend/alembic/versions/be5a6b3416a1_create_complaints_table.py`; verified 2026-09-20: `alembic upgrade head` succeeds against real Postgres 16, `alembic downgrade base` then `upgrade head` again is clean (genuinely reversible, not forward-only). No `CREATE TABLE` anywhere in `app/`. |
+| [x] | Schema complete including triaged_by, ai_summary, triage_latency_ms, timestamptz | 3 | Same migration file. Verified against live DB via `\d complaints` (psql) — every column, type, default, and nullability matches `docs/CONTRACTS.md` §2.3 / `docs/architecture/SCHEMA.md` field-for-field. |
+| [x] | Two indexes, each justified by a named query in your notes | 2 | `ix_complaints_status_priority`, `ix_complaints_created_at`, justified per-query in `docs/architecture/SCHEMA.md` ("Indexes" section). Verified present via `pg_indexes` against live DB. |
+| [x] | Idempotent seed of ≥30 realistic complaints; running it twice changes nothing | 3 | `backend/app/scripts/seed.py` — 36 complaints, Urdu-influenced English, spread across all 6 categories/3 priorities/4 statuses. Verified live: first run inserted 36 rows, second run inserted 0 (36 already present). |
 
 ## E · Cache layer — 10
 

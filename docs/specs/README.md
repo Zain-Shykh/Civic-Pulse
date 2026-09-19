@@ -1,0 +1,3 @@
+# Phase specs
+
+Starting from Phase 5, every phase gets a spec file here — `phase-NN-name.md` — committed *before* implementation begins; Claude Code implements against that file, not against inline chat text, so the instruction that was actually followed is preserved as a durable, reviewable artifact rather than living only in scrollback. Each file stays in the repo permanently, even after delivery, and even if the delivered code ends up only partially matching it or gets logged as an at-risk item in `docs/RUBRIC-CHECKLIST.md` — the spec is the record of what was asked, not a claim about what was achieved.

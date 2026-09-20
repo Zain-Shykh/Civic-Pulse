@@ -53,7 +53,78 @@ Flagged rather than silently decided, per instruction. Do not proceed on any of 
 Note: `docs/specs/TEMPLATE.md` does not currently have an `## Open Questions` heading — I added it to this file only, per the instruction to add the heading if the template doesn't have one, and per "commit this file alone." If you want `## Open Questions` promoted into the template itself for all future specs, that's a separate, explicit edit to `TEMPLATE.md` — not done here.
 
 ## Plan
-(Not started — mandatory before implementation per `docs/WORKFLOW.md`; drafted and committed as its own commit after this Spec is approved.)
+
+Everything below marked **PROPOSAL** is exactly that — awaiting your approval, not a decision already made. Nothing in this section has been implemented.
+
+### Files to be touched, in order
+
+1. `backend/app/providers/triage/base.py` — `Category`/`Priority` enums, `TriageResult`, `TriageProvider`. Written first because every other file in this phase imports from it.
+2. `backend/app/providers/triage/rules.py` — `RuleBasedTriage`, using the rule table proposed below.
+3. `backend/app/providers/triage/simulated.py` — `SimulatedTriage`, using the `name`/failure-injection design proposed below.
+4. `backend/app/providers/triage/factory.py` — `get_triage_provider()`, wiring `"rules"` and `"simulated"` per the proposal below.
+5. `backend/tests/test_triage_providers.py` — unit tests against all of the above, no HTTP, no DB.
+
+### Technical choice: where do `Category`/`Priority` live?
+
+Nothing in the backend currently defines these as Python enums — the Alembic migration (`backend/alembic/versions/be5a6b3416a1_create_complaints_table.py`) defines them as Postgres enum types only, and the repository layer (Phase 4) reads/writes them as plain strings, never through a typed enum. `base.py` is the first consumer that needs them as Python types.
+
+**PROPOSAL:** define `Category`/`Priority` as `str, Enum` classes directly in `base.py`, since it's the only current consumer. Not creating a separate shared `enums.py`/`models.py` module now — that would be building for a Phase 6/7 need that doesn't exist yet (repositories don't need it, and nothing else imports it today). If Phase 6 or 7 later needs the same enums, they import from `app.providers.triage.base`; if that import path turns out to be awkward once services/routes exist, relocating two small enum classes is a cheap refactor to revisit then, not a reason to build a shared module speculatively now.
+
+### Technical choice: `RuleBasedTriage` confidence value
+
+`TriageResult.confidence` is required (`docs/CONTRACTS.md` §2.5 code block) but nothing specifies what a keyword-matching provider should report. A real model's confidence and a keyword-hit aren't the same kind of number, but the field is mandatory on every `TriageResult`.
+
+**PROPOSAL:** two fixed constants, not a computed score (there's nothing to genuinely compute a score from) — `0.7` when at least one category keyword matched, `0.35` when nothing matched and the complaint fell through to the `other`/`normal` default. This is a deliberate simplification with a known ceiling: a fixed number, not a real confidence estimate.
+
+### Technical choice: `SimulatedTriage`'s failure-injection mechanism
+
+`docs/CONTRACTS.md` says "configurable failure injection" but not how. The only concrete thing that needs to be exercisable, per `docs/CONTRACTS.md` line 106–108's mandatory test ("given a provider that always raises, `POST /api/complaints` still returns 201..."), is a provider that reliably raises on every call — that test belongs to Phase 6 (it needs the service layer), but `SimulatedTriage` needs to support the "always raises" mode now so Phase 6 can use it later without changes to this file.
+
+**PROPOSAL:** `SimulatedTriage(always_raise: bool = False)`. Default behavior returns a deterministic (seeded, not random) `TriageResult` cycling through fixture outputs; `always_raise=True` makes every `.triage()` call raise, for exercising fallback paths. Not building a probabilistic fail-rate — nothing in `docs/CONTRACTS.md` or `docs/IMPLEMENTATION-PLAN.md` asks for one, and it would make tests non-deterministic, which directly contradicts why this provider exists.
+
+### Proposed resolutions to the three Open Questions
+
+**1. `SimulatedTriage`'s `triaged_by`/`name` value — PROPOSAL: `"simulated"`.**
+`TriageResult` itself has no `triaged_by` field (see the code block in `docs/CONTRACTS.md` §2.5) — `triaged_by` is populated from `TriageProvider.name` by whatever calls the provider (the Service layer, Phase 6), except in the one documented override case: `docs/CONTRACTS.md` line 101 says the *fallback path specifically* records `triaged_by = "rules:fallback"` even though `RuleBasedTriage.name` is plain `"rules"` — that override belongs to the orchestration layer, not the provider. Given that, `RuleBasedTriage.name = "rules"` is the only precedent for a non-network provider, and it's a bare, unnamespaced string, not `rules:<something>`. Proposing `SimulatedTriage.name = "simulated"` for the same reason — bare, no `llm:`-style prefix (that prefix pattern is specific to hosted LLM providers per `docs/CONTRACTS.md` line 69 / ADR 0001's "Resolved: `triaged_by` naming" section, and `SimulatedTriage` isn't one).
+
+**2. `RuleBasedTriage`'s keyword/pattern rules — PROPOSAL, full table below.**
+Grounded in `backend/app/scripts/seed.py`'s 36 real seeded complaints (Phase 3 committed data — the closest thing to "example complaints" that actually exists in this repo, since the assignment text itself gives only one worked example, the burst-water-main sentence in its Motivation section) and in the category/priority enum definitions from `docs/CONTRACTS.md` §2.3 (lines 51–52). Category keywords were chosen by inspecting what words actually appear across each category's seeded examples; nearly every seeded complaint literally contains its own category name or a tight synonym, which is what the table below reflects.
+
+*Category match — first match wins, checked in this order (most specific/least ambiguous first):*
+
+| Order | Category | Keywords (case-insensitive substring match against `text`) |
+|---|---|---|
+| 1 | `streetlights` | `streetlight`, `street light`, `street lamp` |
+| 2 | `sanitation` | `sewerage`, `sewage`, `garbage`, `trash`, `manhole`, `drain`, `toilet`, `dead animal` |
+| 3 | `roads` | `road`, `pothole`, `speed breaker`, `footpath`, `debris` |
+| 4 | `electricity` | `electricity`, `voltage`, `transformer`, `meter`, `wapda`, `cable`, `wiring`, `lineman`, `power` |
+| 5 | `water` | `water`, `pipeline`, `tanker` |
+| 6 | `other` | *(default — no match above)* |
+
+`streetlights` is checked first specifically because seed complaints like "Streetlight pole is broken" would otherwise risk a false match against a looser `pole`/`light`-style electricity keyword.
+
+*Priority match — checked independently of category, first match wins:*
+
+| Order | Priority | Signal words |
+|---|---|---|
+| 1 | `high` | `urgent`, `urgently`, `danger`, `dangerous`, `risk`, `risky`, `unsafe`, `hazard`, `accident`, `accidents`, `exposed`, `leaning`, `contaminated`, `unhygienic`, `bitten`, `flooding`, `overflow`, `faulty`, `as soon as possible`, `falls on someone`, `school`, `students`, `smells bad`, `bad smell` |
+| 2 | `low` | `bill`, `billing`, `dispute`, `delayed`, `not coming on time`, `flickering`, `faded`, `interfering`, `wasting electricity` |
+| 3 | `normal` | *(default — neither above matched)* |
+
+**This table was actually run against all 36 rows in `backend/app/scripts/seed.py`** (a throwaway verification script during Plan drafting, not a committed test — that's Deliverable #5, written during implementation). An earlier draft of this table was checked "by hand" and claimed to match every row; that claim was wrong — running it for real caught 5 category and 8 priority mismatches, which is exactly the kind of unverified claim `docs/WORKFLOW.md`'s audit step exists to catch. The table above already includes the fixes that were cheap and non-overfit (`lineman`/`power` for electricity; `overflow`, `faulty`, `as soon as possible`, `falls on someone`, `school`, `students`, `smells bad`/`bad smell` for `high`). Result after those fixes:
+
+- **Category: 32/36 correct (88.9%).** 4 remaining mismatches, all genuine lexical/semantic ambiguity, not fixable by adding more keywords without also breaking other rows:
+  - *"Water line got mixed with sewerage line..."* → seeded `water`, table gives `sanitation` (contains both "water" and "sewerage"; ordering `sanitation` before `water` to protect the toilet/garbage cases below causes this one to lose).
+  - *"Illegal encroachment on footpath by shopkeepers..."* → seeded `other`, table gives `roads` (mentions "footpath"/"road" but is about encroachment, not road condition).
+  - *"Public park is being used as garbage dumping point..."* → seeded `other`, table gives `sanitation` (mentions "garbage" but is about park misuse).
+  - *"Mobile tower signal is interfering with our TV cable connection..."* → seeded `other`, table gives `electricity` (mentions "cable" but it's TV cable, not electrical).
+- **Priority: 34/36 correct (94.4%).** 2 remaining mismatches, both seeded `low`, table gives `normal` (no generic, non-overfit low-signal phrase found that doesn't also risk false-positiving on unrelated rows): the public-toilet-condition complaint, and the same garbage-dumping-in-park complaint above.
+
+None of these residual mismatches are being patched with narrower and narrower keyword phrases tuned to exactly one row — that would be overfitting to 36 fixture rows, not building a rule set that generalizes. This is also consistent with the spec: `docs/CONTRACTS.md` §2.5 requires `RuleBasedTriage` to be **deterministic and always available**, never that it be **accurate** — accuracy is `LLMTriage`'s job (`docs/CONTRACTS.md` line 93 vs. the assignment's own framing in its Motivation section: "The information is in the text. Somebody has to read it."). `ponytail:` keyword-substring heuristic, real ceiling ~89–94% against this fixture set; upgrade path is `LLMTriage` (5b), not a bigger keyword table.
+Deliverable #5's tests will assert against this documented, real pass rate (e.g. parametrized over the seed rows, asserting the known-mismatch rows explicitly rather than silently expecting 36/36) — not against a false 100% claim.
+
+**3. `factory.py`'s handling of `"llm"`/`"ollama"` before those classes exist — PROPOSAL: omit the keys.**
+Recommending **omit `"llm"`/`"ollama"` from `_PROVIDERS` entirely for now**, over wiring them to explicit `NotImplementedError` stubs. Reasoning: `docs/adr/0001-provider-interface.md`'s "Consequences" section already establishes the fail-fast requirement — "an unrecognized value should fail fast at startup" — and a `KeyError` on `_PROVIDERS[os.environ["TRIAGE_PROVIDER"]]` *is* a fail-fast-at-startup failure, just with a generic message. Adding `NotImplementedError` stubs for two providers whose classes don't exist yet means writing dead entries that Phase 5b will delete anyway (replacing the stub with a real lambda), which is exactly the kind of scaffolding-for-later `CLAUDE.md`'s workflow contract says not to add. If a clearer error message turns out to matter in practice once 5b starts, that's a one-line change to make at that point, not a reason to build it now.
 
 ## Verification required
 - `python -m pytest backend/tests/test_triage_providers.py -v` — real pasted output, all tests passing.

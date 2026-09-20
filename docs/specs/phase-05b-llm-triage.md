@@ -32,7 +32,7 @@ Each line cites the source that justifies it. Nothing below is included without 
 - NER-based PII scrubbing, or redacting anything in `text` beyond phone numbers and email addresses, or touching `location` — `docs/adr/0004-pii-and-data-governance.md`'s "Consequences" section names this out of scope by decision (names, embedded addresses), not oversight.
 - Verifying `gemini-3.1-flash-lite`'s actual live rate-limit numbers — `docs/OPEN-DECISIONS.md` #1 already flags this as its own outstanding action item, unrelated to this phase's fixed 10-second-timeout/one-retry design, which comes from `docs/CONTRACTS.md` directly rather than from the account's real quota.
 - `OllamaTriage`'s stub content in `ollama.py` — untouched.
-- Any change to `docs/CONTRACTS.md`'s `TriageProvider` Protocol shape (`name: str`, `triage(text, location) -> TriageResult`) — Open Question 2 below flags a real tension here but proposes working within the existing shape, not extending it, pending approval.
+- Any change to `docs/CONTRACTS.md`'s `TriageProvider.triage(text, location) -> TriageResult` method signature — unaffected by Open Question 2's revised proposal below. `TriageResult`'s own shape, by contrast, is now something Open Question 2 explicitly proposes changing — see that section, not this line, for the actual diff.
 
 ## Open Questions
 Flagged rather than silently decided, per instruction. Do not proceed on any of these without a decision.
@@ -42,12 +42,47 @@ Flagged rather than silently decided, per instruction. Do not proceed on any of 
    This is genuinely ambiguous: the first sentence names `LLMTriage` alone as "5b"; the second says `OllamaTriage` "fits in 5b's slot too" but immediately hedges with "sequence... when we get there," which reads as deferred timing, not a hard requirement that both land in one spec/commit/PR.
    **Proposal for approval:** scope this spec (`phase-05b-llm-triage.md`) to `LLMTriage` only, and split `OllamaTriage` into its own `phase-05c-ollama-triage.md` spec later, following the same precedent Phase 5 itself already set by splitting 5a and 5b into separate specs despite both being "Phase 5." Reasoning: `LLMTriage` alone already carries real, citable complexity (redaction, timeout/retry/fallback, structured-output validation, a mandatory injection-guardrail test) — bundling in a second, network-calling provider with a different transport (local Ollama server, not a hosted API) would make one Plan section cover two materially different integrations, working against the "depth scales with the phase" discipline `CLAUDE.md` asks for. This does not decide `OllamaTriage`'s scope, only this spec's — reject this proposal and both providers can still be folded into one Plan if that's preferred.
 
-2. **How does a per-call fallback outcome reach `triaged_by`, given `TriageProvider.name` is a single, static-looking attribute?**
-   `docs/CONTRACTS.md` §2.5's code block declares `TriageProvider.name: str` — one attribute per provider instance — and `TriageResult` itself carries no `triaged_by` field (confirmed directly in `base.py`, Phase 5a). The established reading (Phase 5a's Open Question 1 resolution) is that `triaged_by` is populated from `TriageProvider.name` by whatever calls the provider, except that engineering requirement 4 requires the *fallback path specifically* to record `triaged_by = "rules:fallback"` (`docs/CONTRACTS.md` line 101) even when the provider that was actually configured is `LLMTriage`, whose `name` would otherwise read `"llm:gemini"`.
-   Nothing in `docs/CONTRACTS.md` or the ADRs says how a single provider instance is supposed to report "this particular call fell back" through one static `name` string. Two ways to resolve it, neither citable, both left for Plan-stage decision:
-   - `LLMTriage.name` is a plain instance attribute (not a class constant — nothing prevents this in Python, and Phase 5a's `RuleBasedTriage`/`SimulatedTriage` already use plain class-level assignment, not a frozen constant), and `LLMTriage.triage()` reassigns `self.name = "rules:fallback"` for the duration of/immediately after a call that fell back, then resets it. Works within the Protocol exactly as written; the mechanism itself (mutating `name` per-call) isn't documented anywhere, which is why it's flagged rather than just done.
-   - The interface changes (e.g. `TriageResult` gains a `triaged_by` field, or `triage()` returns a tuple). Rejected as a default option here, not because it's technically worse, but because `CLAUDE.md` is explicit that changing a `docs/CONTRACTS.md` boundary "is a decision to flag, never a side-effect of an unrelated change" — this phase shouldn't quietly widen the Protocol.
-   **Proposal for the Plan step: the first option (mutable `self.name`), no `CONTRACTS.md` change.** Flagging now because it's a real design decision this phase can't avoid, not because either answer is obviously wrong.
+2. **How does a per-call fallback outcome reach `triaged_by`, given `TriageProvider.name` is a single, static-looking attribute? — REVISED, see below.**
+
+   **Instantiation pattern, checked directly:** `backend/app/providers/triage/factory.py` line 34–35 today is
+   ```python
+   def get_triage_provider() -> TriageProvider:
+       return _PROVIDERS[os.environ["TRIAGE_PROVIDER"]]()
+   ```
+   — literally, calling `get_triage_provider()` twice constructs two separate instances; there is no `@lru_cache`, module-level singleton, or `app.state` caching in this function today. But this function is not wired into FastAPI anywhere yet (`grep`-confirmed: no `Depends(`, no `app.state`, in the codebase; `backend/app/main.py` only wires `/health`/`/ready`) — so "does a request get a shared or fresh instance" isn't actually decided yet by any committed code. The only precedent that exists for how this codebase treats an expensive-to-construct, shareable client is `backend/app/db.py` (`engine: AsyncEngine = create_async_engine(...)`, one module-level instance, reused for the life of the process) and `backend/app/providers/cache.py` (`client: redis.Redis = redis.from_url(...)`, same pattern) — both are constructed once and shared across every request, never rebuilt per call. An LLM SDK client is the same shape of thing (expensive to construct, safe to share, exactly the kind of object these two existing modules already treat as a singleton), so it would be surprising — and a real, uncited assumption — for Phase 6/7 to instead rebuild an `LLMTriage`/Gemini client fresh per request. **Given this codebase's own established pattern, treat "the configured `TriageProvider` instance is shared across concurrent requests" as the likely outcome, not a hypothetical.**
+
+   **The race, walked through explicitly:** assume `LLMTriage` is constructed once and shared (per the above). Request A and Request B arrive concurrently, both call `provider.triage(...)` on the *same* `LLMTriage` instance. Say `self.name` starts as `"llm:gemini"`.
+   1. A's coroutine starts, calls Gemini, hits the 10-second timeout budget — this is an `await` point, so the event loop is free to run other coroutines while A is suspended waiting on the network call.
+   2. While A is suspended, B's coroutine runs to completion: its own Gemini call exhausts retries, so `LLMTriage.triage()` sets `self.name = "rules:fallback"` as its documented way of reporting the fallback, returns a `TriageResult`, and (say) resets `self.name` back to `"llm:gemini"` afterward.
+   3. A resumes, its own Gemini call actually succeeds on the (still in-flight) request. But depending on exactly when the caller reads `provider.name` relative to steps 2–3 finishing, A's `triaged_by` can end up read as whatever `self.name` happens to hold *at that moment* — which may be B's transient `"rules:fallback"` value, not A's own real outcome, or vice versa if the timing runs the other way.
+   This is not a hypothetical edge case — it's the standard "shared mutable state read after an `await` boundary" bug shape under `asyncio`'s cooperative scheduling: any `await` inside `.triage()` (and a real network call has to have one) is a window where another coroutine can observe or clobber `self.name` before the first caller reads it back. **Confirmed: mutating `self.name` per-call is a real race condition given this codebase's own likely instantiation pattern, not a theoretical one.** The original proposal is withdrawn.
+
+   **Revised proposal — `TriageResult` gains its own `triaged_by` field, returned fresh by every call, never read back from shared provider state.**
+
+   Current shape (`docs/CONTRACTS.md` §2.5 code block, lines 76–80):
+   ```python
+   class TriageResult(BaseModel):
+       category: Category
+       priority: Priority
+       summary: str = Field(max_length=140)
+       confidence: float = Field(ge=0.0, le=1.0)
+   ```
+   Proposed diff — **one new field, `triaged_by: str`**, added to `TriageResult`:
+   ```python
+   class TriageResult(BaseModel):
+       category: Category
+       priority: Priority
+       summary: str = Field(max_length=140)
+       confidence: float = Field(ge=0.0, le=1.0)
+       triaged_by: str  # NEW — e.g. "llm:gemini", "rules", "simulated", "rules:fallback"
+   ```
+   Type is a plain `str`, not a closed enum, matching `docs/CONTRACTS.md`'s own schema-table note that `triaged_by`'s listed values are "a pattern, not a fixed enum" (line 55/69). Each provider sets it locally, as a normal return value, inside its own `triage()` call — no shared instance attribute involved, so there is nothing for a concurrent call to race against. `LLMTriage` sets `"llm:gemini"` on a successful call and `"rules:fallback"` on the fallback path, entirely within that one call's local scope.
+
+   **This is explicitly a `docs/CONTRACTS.md` change, flagged for your approval before Plan, not a side effect:** `TriageProvider.triage()`'s signature (`name: str`, `triage(text, location) -> TriageResult`) is unchanged — only `TriageResult`'s field list grows by one.
+
+   **Real consequence worth seeing before approving: this ripples backward into Phase 5a, already marked `done`.** `RuleBasedTriage` and `SimulatedTriage` (`backend/app/providers/triage/rules.py`, `simulated.py`) construct `TriageResult` today without a `triaged_by` field at all — adding a required field to the model means both would fail Pydantic validation on their next call until updated to pass `triaged_by="rules"` / `"simulated"` respectively, and `backend/tests/test_triage_providers.py`'s existing 84 tests would need the same update wherever they construct or assert on a `TriageResult`. This is in-scope rework this spec would need to either absorb itself or explicitly hand to a small Phase 5a patch commit — not a free change.
+
+   **Side benefit, not the reason to do it, but worth naming:** this also removes the special-casing Phase 5a's Open Question 1 resolution left standing — "`triaged_by` is populated from `TriageProvider.name` by the service layer, except the fallback path overrides it to `rules:fallback`." With `triaged_by` on `TriageResult` itself, Phase 6's service layer just persists whatever the provider already decided, with no override rule to reimplement or get wrong.
 
 3. **Exact mechanism for testing the Gemini call path without a live API key/quota.**
    Per explicit instruction, CI cannot depend on a live Gemini key or quota, and Deliverable #5 already names the test file this implies. The exact mechanism — a fake HTTP transport, a monkeypatched `google-genai` client, or a small dependency-injected client seam inside `LLMTriage` — is left undecided here and proposed in the Plan step, per instruction ("your call, but this needs to be decided in Plan"). Note: `google-genai==2.24.0` is already a pinned dependency (`backend/pyproject.toml`), so no new dependency is implied regardless of which mechanism is chosen.

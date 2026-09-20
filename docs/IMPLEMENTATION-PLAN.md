@@ -59,6 +59,16 @@ Split into two sub-phases because they have genuinely different risk profiles:
 - Request validation (Pydantic models), error response shapes exactly as contracted (including the 409 transition-error body).
 - **Done looks like:** `httpx`/`TestClient` integration tests hit every route end-to-end against a test DB with `SimulatedTriage`; OpenAPI schema (`/docs`, `/openapi.json`) reflects the real contract, ready for the frontend to codegen or hand-type a client against.
 
+## Phase 7b — Observability middleware
+
+**Depends on:** Phase 7 (needs real routes in place to instrument — request counts/latencies on endpoints that don't exist yet is nothing to measure).
+**Unlocks:** nothing downstream — no later phase in this plan depends on `/metrics` existing.
+**Rubric:** Bonus, capped at +15 (`docs/RUBRIC-CHECKLIST.md`, "Bonus" section): "Prometheus scraping /metrics plus a Grafana dashboard, screenshot committed | +2". This phase builds the endpoint; the full +2 also needs a scraping Prometheus instance, a Grafana dashboard, and a committed screenshot — scope for those pieces isn't decided here, just the slot.
+
+- `docs/CONTRACTS.md` §2.2's row for this endpoint, quoted verbatim: `GET | /metrics | Prometheus text format: request count, request latency histogram, triage latency, fallback counter.`
+- Deliberately not folded into Phase 7 (routes) or Phase 8 (cache): it's cross-cutting ASGI middleware instrumentation, not a call into `services/`/`repositories/` the way every other endpoint is — a different shape of work from either neighboring phase.
+- Spec not written yet — this entry only reserves the phase so the endpoint isn't silently dropped from the plan.
+
 ## Phase 8 — Cache layer
 
 **Depends on:** Phase 7 (rate limiter wraps a real `POST /api/complaints`; stats caching wraps a real `/api/stats`).

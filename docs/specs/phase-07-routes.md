@@ -29,7 +29,6 @@ Every remaining row of CONTRACTS.md's nine-endpoint table (§2.2):
 - No Redis: no `X-Cache` header on `GET /api/stats`, no 30 s cache TTL, no invalidation-on-write. Phase 8.
 - No rate limiting: `POST /api/complaints`'s 429/`Retry-After` is Redis-backed per CONTRACTS.md §2.4 ("must be distributed, in Redis, not an in-process dictionary") — no Redis rate-limiter exists yet, so this phase cannot build it without violating that requirement itself. Phase 8, alongside the stats cache.
 - No triage-result content-hash cache (24 h TTL) — same reason, same phase, already a Non-goal since Phase 5b.
-- No `GET /metrics` (Prometheus text format) — not in this phase's dependency chain from IMPLEMENTATION-PLAN.md; a separate deliverable.
 - No frontend.
 - No changes to `/health` or `/ready` (Phase 2, ADR 0005) beyond registering existing routers unchanged.
 - No OllamaTriage wiring (still an open question from Phase 5b, untouched here).
@@ -40,9 +39,34 @@ Every remaining row of CONTRACTS.md's nine-endpoint table (§2.2):
 3. **Exception handler registration mechanism.** No precedent exists in this codebase (`health.py`'s 503 is built inline via `Response`, not an exception handler, because it never raises). FastAPI supports global handlers (`@app.exception_handler(...)` in `main.py`, one per exception type, run for any route) or per-route `try/except`. A global handler keeps `routes/complaints.py`'s bodies free of repeated exception-mapping code and matches CLAUDE.md's "routes: HTTP only... no business rules" more cleanly than duplicating `try/except IllegalTransitionError` in every route that can raise it — recommended, but stated as a recommendation needing sign-off, not an inferred default.
 4. **Provider lifecycle — construction frequency.** Phase 6's spec deferred this exact question here ("the real answer to Phase 7"), citing ADR 0001's "obtained once from the factory (e.g. via FastAPI dependency injection)" as ambiguous on frequency. This phase is where it can no longer be deferred: a route-layer `Depends()` either (a) calls `get_triage_provider()` fresh on every request (cheap for `rules`/`simulated`, but constructs a new SDK-backed object on every request for `llm`), or (b) constructs one provider once at app startup (e.g. stored on `app.state`) and injects the same instance every request. ADR 0001's wording doesn't pin which. Recommendation for Plan: construct once at startup, store on `app.state`, inject via a `Depends()` that reads it back — but this needs explicit approval, it is not a mechanical detail.
 5. **Text/location validation boundary — confirmed, not left open.** CONTRACTS.md §2.3 states these bounds explicitly ("text: 10–2000 chars... enforced in the DB as well as the app"; "location: 3–200 chars") — Pydantic `min_length`/`max_length` on the request model enforces this before the DB is ever touched, failing with the same 400 path as any other validation error (Open Question 1's body-shape question applies here too, but the boundary values themselves and the requirement to enforce them app-side are not open).
+6. **`GET /metrics` — phase ownership.** Neither `docs/CONTRACTS.md` nor `docs/IMPLEMENTATION-PLAN.md` cleanly assigns this endpoint anywhere: IMPLEMENTATION-PLAN.md's Phase 7 bullet ("All remaining endpoints from `docs/CONTRACTS.md` wired to services") is worded broadly enough to sound like it includes it, but `/metrics` is Prometheus request-count/latency-histogram instrumentation — cross-cutting ASGI middleware, not a call into `services/complaints.py` the way every other endpoint in this spec is. Genuinely not this phase's shape of work. Resolved (see IMPLEMENTATION-PLAN.md): given its own slot, Phase 7b, rather than folded silently into 7 or 8.
 
 ## Plan
-(empty — pending human review of the above)
+
+**Files touched, in order:**
+
+1. `backend/app/schemas/complaints.py` (new) — `ComplaintCreateRequest` (`text`: 10–2000 chars, `location`: 3–200 chars, `reporter_contact`: optional), `StatusUpdateRequest` (`status: str`). Bounds copied verbatim from CONTRACTS.md §2.3.
+2. `backend/app/exception_handlers.py` (new) — three handlers: `NotFoundError` → 404 `{"detail": f"complaint {complaint_id} not found"}`; `IllegalTransitionError` → 409 `{"detail": {"current_status": ..., "attempted_status": ..., "message": "..."}}`; `RequestValidationError` → 400 (overriding FastAPI's default 422) `{"detail": exc.errors()}`, reusing FastAPI's own error list rather than inventing a new shape.
+3. `backend/app/repositories/complaints.py` (edit) — add `recent_triage_outcomes(limit=20)`, one `SELECT triaged_by, triage_latency_ms, created_at ... ORDER BY created_at DESC LIMIT :limit`.
+4. `backend/app/services/complaints.py` (edit) — add three thin wrappers:
+   - `get_complaint(id)` — calls `repository.get_by_id`; if `None`, **raises `NotFoundError(id)`** (not a plain passthrough returning `None`). This matches `change_status()`'s existing pattern exactly, so every "not found" case anywhere in the service layer goes through the same exception, and the route layer has exactly one path for 404 (the global `NotFoundError` handler) instead of two (an exception for `change_status`, a manual `None`-check for a plain read).
+   - `list_complaints(...)` — passthrough to `repository.list_complaints`.
+   - `get_meta_providers(provider)` — returns `{"active_provider": provider.name, "recent_outcomes": [...]}`, deriving `fallback` as `triaged_by == "rules:fallback"`.
+5. `backend/app/routes/complaints.py` (new) — `POST /api/complaints`, `GET /api/complaints/{id}`, `GET /api/complaints`, `PATCH /api/complaints/{id}/status`. `GET /api/complaints/{id}` is now a direct call to `services.complaints.get_complaint(id)` with no route-level `None`-check — a miss raises `NotFoundError`, caught by the global handler from item 2. Every 404 in this file is produced the same way.
+6. `backend/app/routes/meta.py` (new) — `GET /api/meta/providers`.
+7. `backend/app/routes/stats.py` (new) — `GET /api/stats` (aggregates only, no `X-Cache`, per Non-goals).
+8. `backend/app/main.py` (edit) — FastAPI `lifespan` constructs one `TriageProvider` via `get_triage_provider()` at startup, stores it on `app.state.triage_provider`; a `Depends()` reads it back for injection into routes. Register the three new routers and the three exception handlers.
+9. `backend/tests/test_routes_complaints.py` (new).
+
+**Key technical choices:**
+
+- **Provider lifecycle (Open Question 4):** construct once at startup on `app.state`. `LLMTriage.__init__` (`providers/triage/llm.py:75-79`) sets only `self._client` and `self._fallback`, both fixed at construction; `.triage()` (lines 82-125) never assigns to `self.` anything — confirmed directly, no mutable state to race across concurrent requests sharing one instance.
+- **Exception handlers (Open Question 3):** global, registered once in `main.py`, not per-route `try/except`.
+- **Error/response body shapes (Open Questions 1/2):** FastAPI's own `{"detail": ...}` convention throughout; list/meta success shapes as pasted to you separately.
+- **Single not-found path:** `NotFoundError` is now the only mechanism by which any route in this phase produces a 404 — no route contains its own `if ... is None` check.
+- **`/metrics`:** excluded from this file list — given its own phase, 7b, in IMPLEMENTATION-PLAN.md.
+
+All four Open Questions this Plan touches (1, 2, 3, 4) remain proposals awaiting approval, not decisions — same status as before this edit, only Deliverable #4/route #5 changed in substance.
 
 ## Verification required
 - `docker compose up -d postgres redis` (routes touch `/ready`, which pings both — Redis must be up even though this phase adds no Redis *usage* of its own beyond that existing check).

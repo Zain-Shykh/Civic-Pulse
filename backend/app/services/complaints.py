@@ -79,3 +79,38 @@ async def submit_complaint(
 
 async def get_stats() -> dict[str, Any]:
     return await repository.stats_summary()
+
+
+async def get_complaint(complaint_id: uuid.UUID) -> dict[str, Any]:
+    complaint = await repository.get_by_id(complaint_id)
+    if complaint is None:
+        raise NotFoundError(complaint_id)
+    return complaint
+
+
+async def list_complaints(
+    *,
+    status: str | None = None,
+    category: str | None = None,
+    priority: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> tuple[list[dict[str, Any]], int]:
+    return await repository.list_complaints(
+        status=status, category=category, priority=priority, page=page, page_size=page_size
+    )
+
+
+async def get_meta_providers(provider: TriageProvider) -> dict[str, Any]:
+    outcomes = await repository.recent_triage_outcomes(limit=20)
+    return {
+        "active_provider": provider.name,
+        "recent_outcomes": [
+            {
+                "provider": row["triaged_by"],
+                "latency_ms": row["triage_latency_ms"],
+                "fallback": row["triaged_by"] == "rules:fallback",
+            }
+            for row in outcomes
+        ],
+    }

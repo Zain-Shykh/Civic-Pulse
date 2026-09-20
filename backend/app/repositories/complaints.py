@@ -46,6 +46,15 @@ _UPDATE_STATUS = text(
     """
 )
 
+_RECENT_TRIAGE_OUTCOMES = text(
+    """
+    SELECT triaged_by, triage_latency_ms, created_at
+    FROM complaints
+    ORDER BY created_at DESC
+    LIMIT :limit
+    """
+)
+
 async def create(
     *,
     complaint_text: str,
@@ -159,3 +168,13 @@ async def stats_summary() -> dict[str, Any]:
         "counts_by_category": {row.category: row.n for row in by_category},
         "average_triage_latency_ms": float(avg_latency) if avg_latency is not None else 0.0,
     }
+
+
+async def recent_triage_outcomes(limit: int = 20) -> list[dict[str, Any]]:
+    """The last `limit` triage outcomes, newest first — docs/specs/
+    phase-07-routes.md, GET /api/meta/providers Deliverable. Reuses the
+    complaints table CivicPulse already writes every outcome to, rather than
+    a separate in-memory tracker."""
+    async with engine.connect() as conn:
+        rows = await conn.execute(_RECENT_TRIAGE_OUTCOMES, {"limit": limit})
+        return [dict(row) for row in rows.mappings().all()]

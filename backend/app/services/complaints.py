@@ -40,7 +40,9 @@ async def change_status(complaint_id: uuid.UUID, new_status: str) -> dict[str, A
         raise IllegalTransitionError(current_status, new_status)
 
     updated = await repository.update_status(complaint_id, new_status)
-    # existence just confirmed above; no concurrent-delete handling in scope
+    # No DELETE endpoint exists anywhere in docs/CONTRACTS.md's API table, so a
+    # complaint present at the get_by_id check above cannot be deleted before
+    # update_status() runs — this is a provable invariant, not a hedge.
     assert updated is not None
     return updated
 

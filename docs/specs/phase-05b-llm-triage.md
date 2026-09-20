@@ -87,10 +87,8 @@ Flagged rather than silently decided, per instruction. Do not proceed on any of 
 3. **Exact mechanism for testing the Gemini call path without a live API key/quota — RESOLVED, see Plan.**
    Per explicit instruction, CI cannot depend on a live Gemini key or quota, and Deliverable #5 already names the test file this implies. Resolved below in Plan: `google-genai==2.24.0`'s own `HttpOptions.httpx_client`/`httpx_async_client` fields, confirmed by direct inspection of the installed package, are a first-party injection seam — no monkeypatching needed.
 
-4. **`TriageProvider.triage()` is declared synchronous (`docs/CONTRACTS.md` §2.5: `def triage(self, text: str, location: str) -> TriageResult: ...`, no `async`), but a real Gemini call is network I/O — does `LLMTriage` block the event loop, and is that acceptable?**
-   Phase 5a's `RuleBasedTriage`/`SimulatedTriage` are synchronous and CPU-only, so this tension didn't exist until now — `LLMTriage` is the first provider that actually has an I/O call to make. `backend/app/db.py` already establishes this codebase uses `async`/`await` throughout (`AsyncEngine`, `async def ping()`), and Phase 6 (services, not yet spec'd) will almost certainly be async FastAPI route handlers. If `LLMTriage.triage()` makes a *synchronous, blocking* network call from inside an async request handler, it stalls the entire event loop for up to the full retry-inclusive latency budget (worst case ~21.5s, see Plan below) — every other concurrent request stalls too, which is a real problem for a system whose own Motivation section is framed around "a citizen watching a spinner."
-   Nothing in `docs/CONTRACTS.md` or the ADRs resolves this — the Protocol's synchronous signature is either (a) deliberate, on the assumption that Phase 6 will run each provider call in a thread (e.g. `asyncio.to_thread(provider.triage, text, location)`), keeping every provider implementation uniformly synchronous and pushing the async boundary to the one place that already has to orchestrate all four providers, or (b) an oversight that wasn't caught because Phase 5a's two providers never needed to make it visible.
-   **Proposal for approval: keep `triage()` synchronous, per (a).** Concretely: use `google-genai`'s synchronous client path (`client.models.generate_content(...)`, not `.aio`), verified working below. This keeps every `TriageProvider` implementation structurally identical (no provider is secretly a coroutine function while others aren't, which would break Phase 6's ability to call "the provider" uniformly regardless of which one is configured) and treats "don't block the event loop" as Phase 6's orchestration concern (wrap the call in a thread) rather than something this phase can unilaterally decide by changing the Protocol. Flagging rather than just doing it because it constrains a phase (6) that doesn't have a spec yet — if Phase 6 turns out to need something different, this is the first place that assumption was made.
+4. **`TriageProvider.triage()`'s sync-vs-async question — RESOLVED, reversed from this spec's original proposal.**
+   Originally proposed keeping `triage()` synchronous (see git history of this file for the withdrawn reasoning). **Decision: `TriageProvider.triage()` becomes `async def` everywhere, uniformly, across every provider** — a synchronous `LLMTriage` would block FastAPI's single event loop for up to ~22s per request (this Plan's own worst-case retry-inclusive latency, below), stalling every other concurrent request on that worker, not just the one being triaged — a real problem for the k6/HPA load-test exercise (`docs/OPEN-DECISIONS.md` #8), where a stalled-but-idle-looking worker is invisible to CPU/memory-based autoscaling metrics. Applied as `docs/specs/phase-05a-deterministic-triage.md`'s **post-hoc amendment #2** (dated, appended, not a rewrite) — `docs/CONTRACTS.md`, `base.py`, `rules.py`, `simulated.py`, and `test_triage_providers.py` (84 tests, converted to `async def`/`await`, re-verified 84/84 passing twice) are already updated. This Plan's client-construction and retry sections below now reflect the async path throughout.
 
 ## Plan
 
@@ -113,30 +111,36 @@ Inspecting the installed `google-genai==2.24.0` package directly (`python -c "im
 - `google.genai.errors.APIError(code: int, response_json, response)`, with `ClientError`/`ServerError` as trivial (`pass`-bodied) subclasses. **Confirmed by actually triggering each status code through a fake transport** (below): both `400` and `429` raise `ClientError` — the *same* exception class — distinguishable only by the real `.code` int, not by `isinstance`. `500`/`503` raise `ServerError`. A synthetic timeout raises a bare `httpx.ReadTimeout`, not any `genai`-specific exception — the SDK doesn't wrap timeouts.
 - `types.HttpRetryOptions` exists as a native SDK retry mechanism (`HttpOptions.retry_options`). **Deliberately not used** — its retry-count/backoff shape isn't inspected/documented enough here to trust it produces exactly "one retry, jittered, only on timeout/429/5xx, never 400," and an opaque SDK-internal retry is harder to unit-test deterministically than an explicit wrapper this phase controls end to end. Confirmed empirically that it's inert by default (each fake-transport call above triggered exactly one real request, no SDK-internal retry already happening behind the scenes).
 
-**PROPOSAL: `LLMTriage.triage()` uses the synchronous `client.models.generate_content(...)` path (not `.aio`), per Open Question 4 above, with `HttpOptions.httpx_client` as the sole seam for both production and tests.** Production: `LLMTriage(api_key=settings.gemini_api_key)` builds a real `genai.Client` with no `httpx_client` override (SDK builds its own real one). Tests: `LLMTriage(api_key="test", http_options=types.HttpOptions(httpx_client=httpx.Client(transport=httpx.MockTransport(handler)), timeout=10000))` — an explicit `http_options` constructor parameter is `LLMTriage`'s one test seam, matching Phase 5a's precedent of small, explicit constructor parameters (`SimulatedTriage(always_raise: bool = False)`) rather than a global monkeypatch.
+**PROPOSAL — reversed from this Plan's own earlier draft: `LLMTriage.triage()` is `async def` and uses `client.aio.models.generate_content(...)`, per the resolved Open Question 4 above, with `HttpOptions.httpx_async_client` (not `httpx_client`) as the seam.** Production: `LLMTriage(api_key=settings.gemini_api_key)` builds a real `genai.Client` with no override (SDK builds its own real async transport). Tests: `LLMTriage(api_key="test", http_options=types.HttpOptions(httpx_async_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)), timeout=10000))` — same explicit `http_options` constructor-parameter seam as before, just pointed at the async client/transport pair instead of the sync one.
 
-**Verified, not assumed, with real executed code** (both sync and async paths tested; sync is what's proposed):
+**Re-verified for the async path specifically, not assumed to carry over from the sync version above — fresh, real executed code, all six required response shapes in one run:**
 ```python
-def handler(request: httpx.Request) -> httpx.Response:
-    return httpx.Response(200, json={"candidates": [{"content": {"parts": [
-        {"text": '{"category":"water","priority":"high","summary":"t","confidence":0.9}'}
-    ], "role": "model"}, "finishReason": "STOP"}]})
+async def make_async_client(handler):
+    mock = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return Client(api_key="fake", http_options=types.HttpOptions(httpx_async_client=mock, timeout=10000))
 
-client = Client(api_key="fake", http_options=types.HttpOptions(
-    httpx_client=httpx.Client(transport=httpx.MockTransport(handler)), timeout=10000,
-))
-resp = client.models.generate_content(model="gemini-3.1-flash-lite", contents="x")
-# resp.text == '{"category":"water","priority":"high","summary":"t","confidence":0.9}'
-# the mock handler's `calls` list shows exactly one intercepted URL:
-# 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent'
+# success
+resp = await client.aio.models.generate_content(model="gemini-3.1-flash-lite", contents="x")
 ```
-This is the real request URL the SDK would otherwise have sent to Google — proof the call was actually routed through `httpx.MockTransport`, not silently skipped or short-circuited by some other code path. `httpx.MockTransport` never opens a socket by construction (it's `httpx`'s own first-party mechanism for exactly this; not a hand-rolled fake) — that is the mechanism proving "no live network call ever happens," not an assumption about test discipline.
+Real output from that run:
+```
+SUCCESS -> {"category":"water","priority":"high","summary":"t","confidence":0.9}
+MALFORMED (SDK-level) -> raw text: 'not json at all, just prose' -- would fail Pydantic parse downstream
+TIMEOUT -> raised httpx.ReadTimeout
+429 -> raised ClientError code= 429 retry-after= 3
+500 -> raised ServerError code= 500 retry-after= None
+503 -> raised ServerError code= 503 retry-after= None
+400 -> raised ClientError code= 400 retry-after= None
+
+real network calls intercepted: 1 ['https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent']
+```
+Identical behavior to the sync path's earlier verification (same exception classes, same `.code` values, same `Retry-After` readability, same real endpoint URL intercepted, zero sockets opened) — confirming the async/sync choice only changes which `HttpOptions` field and which client attribute (`.aio.models` vs `.models`) are used, not any of the error-handling logic already designed below.
 
 **Deliverable #5's five required paths, each just a different `handler` function returning/raising a different thing, all verified working above or by the same mechanism:**
 | Path | Handler behavior | What `LLMTriage` sees |
 |---|---|---|
 | Success, valid structured response | `httpx.Response(200, json={...well-formed candidate...})` | Parses and validates cleanly |
-| Malformed / out-of-schema response | `httpx.Response(200, json={...candidate text not matching the schema, or missing fields...})` | Same 200 path, but the intermediate schema (below) fails Pydantic validation — asserted as a `ValidationError`/fallback trigger, not a crash |
+| Malformed / out-of-schema response | `httpx.Response(200, json={...candidate text not matching the schema, or missing fields...})` — **verified**, SDK returns the raw text uninterpreted (`resp.text` is just prose) | Same 200 path, but the intermediate schema (below) fails Pydantic validation — asserted as a `ValidationError`/fallback trigger, not a crash |
 | Timeout | `handler` raises `httpx.ReadTimeout(...)` — **verified**, propagates as bare `httpx.ReadTimeout` | Caught, triggers retry-then-fallback path |
 | 429 | `httpx.Response(429, json={...}, headers={"retry-after": "N"})` — **verified**, raises `ClientError` with `.code == 429` and `.response.headers["retry-after"]` readable | Caught, triggers retry (honors `Retry-After` if present, see jitter proposal below) |
 | 5xx | `httpx.Response(500 or 503, json={...})` — **verified**, raises `ServerError` with matching `.code` | Caught, triggers retry-then-fallback |
@@ -150,8 +154,8 @@ This is the real request URL the SDK would otherwise have sent to Google — pro
 
 **PROPOSAL — backoff/jitter formula, since there's no citable number to implement "with jitter" against:** a flat random window, not exponential backoff (exponential backoff exists to space out a *series* of retries; with exactly one retry there's no series to space out against itself — only against *other concurrent requests* also retrying at the same moment).
 - If the failure carried a `Retry-After` header (confirmed real and readable via `e.response.headers.get("retry-after")` above — this is the 429 case specifically, and occasionally 503) — honor it: sleep `max(int(header_value), 0.5)` seconds before the single retry. The server's own stated cooldown is more authoritative than a guessed window.
-- Otherwise (timeout, 5xx with no `Retry-After`, or an unparseable header): `time.sleep(random.uniform(0.5, 1.5))` — a half-second-to-1.5-second random window. Justification for jitter mattering even at n=1: if the free-tier quota is briefly exhausted, many concurrent citizen submissions can all get `429`'d within the same second; without jitter, every one of their single retries fires back at the API in that same synchronized instant and likely gets `429`'d again together. A random window spreads those retries out over roughly a one-second span instead.
-- `time.sleep`, not `asyncio.sleep` — follows directly from Open Question 4's proposal to keep `triage()` synchronous.
+- Otherwise (timeout, 5xx with no `Retry-After`, or an unparseable header): `await asyncio.sleep(random.uniform(0.5, 1.5))` — a half-second-to-1.5-second random window. Justification for jitter mattering even at n=1: if the free-tier quota is briefly exhausted, many concurrent citizen submissions can all get `429`'d within the same second; without jitter, every one of their single retries fires back at the API in that same synchronized instant and likely gets `429`'d again together. A random window spreads those retries out over roughly a one-second span instead.
+- `asyncio.sleep`, not `time.sleep` — flipped from this Plan's original proposal for the identical reason `triage()` itself became async (Open Question 4, resolved): `time.sleep` blocks the whole event loop for the sleep duration, same problem as a blocking network call, just smaller in magnitude. `await asyncio.sleep(...)` yields control back to the loop instead, letting other requests' coroutines run during the jitter window.
 
 **Stated consequence, not an open question (no citable SLA exists to constrain it further):** worst-case latency before falling back is roughly the first attempt's full 10s timeout budget, plus up to ~1.5s jitter (or a server-specified `Retry-After`, potentially longer), plus the retried attempt's own full 10s timeout budget — around 20–22s worst case. `docs/CONTRACTS.md` requirement 2 says "hard timeout, 10 seconds, on every call" (plural "every call," read as: both the original and the retried attempt each get their own fresh 10-second budget, not a shared/decremented one).
 

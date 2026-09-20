@@ -98,6 +98,7 @@ Split into two sub-phases because they have genuinely different risk profiles:
 - Re-check `.dockerignore` effectiveness now that real source trees exist (not just the skeleton's few files).
 - Digest pinning, if pursued — currently bonus scope (`docs/OPEN-DECISIONS.md` #10), decide when we revisit bonus before Phase 12.
 - Re-run the network-segmentation proof (`frontend` → `postgres` ping) against the full app, not just the skeleton, since this is a graded proof point every time the compose files change materially.
+- **Open Question, raised during Phase 7:** `compose.prod.yaml`'s `backend` service has no `TRIAGE_PROVIDER`/`GEMINI_API_KEY` in its `environment:` block at all (checked directly — neither name appears anywhere in the file). Deliberately not fixed in Phase 7, and deliberately not defaulted to `rules` the way `compose.yaml` (dev) now is: production should fail fast on a missing required secret, not silently run a dev-shaped provider. This phase should decide whether that means adding explicit `TRIAGE_PROVIDER: ${TRIAGE_PROVIDER}` / `GEMINI_API_KEY: ${GEMINI_API_KEY}` references (so Compose itself errors clearly on an unset variable) versus some other fail-fast mechanism.
 - **Done looks like:** same live verification loop as Phase 2's Part D, rerun against the real app.
 
 ## Phase 11 — Kubernetes manifests

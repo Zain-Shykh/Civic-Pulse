@@ -1,5 +1,5 @@
 # Phase 07: Routes
-Status: not started
+Status: done
 Depends on: Phase 6 (services/complaints.py — change_status, submit_complaint, get_stats)
 Reads first: docs/CONTRACTS.md §2.2 (API contract, status state machine), §2.3 (schema — text/location bounds, triaged_by pattern), §2.4 (Redis — explicitly deferred, see Non-goals), §2.5 (TriageProvider/TriageResult, mandatory Determinism test), docs/adr/0001-provider-interface.md, docs/adr/0005-ready-endpoint-layering-exception.md, backend/app/services/complaints.py, backend/app/services/exceptions.py, backend/app/repositories/complaints.py, backend/app/routes/health.py
 
@@ -82,4 +82,68 @@ All four Open Questions this Plan touches (1, 2, 3, 4) remain proposals awaiting
 If anything found during Plan drafting conflicts with CONTRACTS.md or has no citable source, stop and ask — do not silently resolve. (Five candidates already surfaced above, as Open Questions, for exactly this reason.)
 
 ## As-Built
-(empty)
+
+**Deviations from Plan:**
+- Exception handler signatures widened from the specific exception subtype (`exc: NotFoundError`) to `exc: Exception` with an `assert isinstance(exc, ...)` inside, in all three handlers (`app/exception_handlers.py`). `Starlette.add_exception_handler`'s own type signature only accepts `Callable[[Request, Exception], ...]`; mypy strict rejected the narrower signatures (`Argument 2 to "add_exception_handler"... incompatible type`). The `assert` documents and enforces the same contract at runtime — Starlette only ever calls a handler with the type it was registered for.
+- A route-shared `app/routes/dependencies.py` was added, not explicitly listed as its own numbered file in the Plan (it was implied by "a `Depends()` that reads it back" in step 8) — `get_triage_provider`/`TriageProviderDep` needed a home reachable from all three new route modules (`complaints.py`, `meta.py`), not just `main.py`.
+- Everything else matches the Plan's file list and technical choices as approved, including the `get_complaint()` → `NotFoundError` fix from the prior review round.
+
+**Verification — real output, not summarized:**
+
+Standalone new-test run (`pytest tests/test_routes_complaints.py -v -o asyncio_mode=auto`):
+```
+collected 16 items
+...
+======================== 16 passed, 2 warnings in 1.46s ========================
+```
+All 16 pass, including `TestMandatoryDeterminism::test_provider_that_always_raises_still_returns_201` — the first full HTTP-level proof of CONTRACTS.md §2.5's mandatory Determinism test.
+
+Combined run with every prior test file (`test_repositories.py`, `test_triage_providers.py`, `test_llm_triage.py`, `test_services_complaints.py`, `test_routes_complaints.py`), twice:
+```
+======================= 153 passed, 2 warnings in 2.70s ========================
+======================= 153 passed, 2 warnings in 2.61s ========================
+```
+(153 = 137 pre-existing + 16 new; identical count both runs, no order dependency.)
+
+`ruff check .` → `All checks passed!` (one line-length fix needed first, in the new test file's `_create_payload` default argument — wrapped onto its own line).
+
+`mypy app` → `Success: no issues found in 30 source files`.
+
+**Manual HTTP verification against the built image** (`civicpulse-backend:dev`, run as an ad-hoc container on the compose `internal` network with `TRIAGE_PROVIDER=simulated` explicitly supplied — see "New finding" below for why this couldn't be `docker compose up backend` unmodified):
+
+```
+POST /api/complaints -> 201
+{"id":"...","category":"water","priority":"high","status":"open","triaged_by":"simulated", ...}
+
+GET /api/complaints/{id} -> 200
+GET /api/complaints/{missing-id} -> 404
+{"detail":"complaint b5e2060f-363a-46a3-9a38-f37e841297cd not found"}
+
+GET /api/complaints?page=1&page_size=5 -> 200
+{"items":[...], "total": ..., "page": 1, "page_size": 5}
+
+PATCH .../status {"status":"in_progress"} (legal) -> 200
+PATCH .../status {"status":"open"} (illegal, in_progress->open) -> 409
+{"detail":{"message":"in_progress -> open is not a legal transition","current_status":"in_progress","attempted_status":"open"}}
+
+POST /api/complaints {"text":"too short",...} -> 400
+{"detail":[{"type":"string_too_short","loc":["body","text"],"msg":"String should have at least 10 characters","input":"too short","ctx":{"min_length":10}}]}
+
+GET /api/stats -> 200
+{"counts_by_status":{"rejected":3,"resolved":6,"open":15,"in_progress":13}, "counts_by_category":{...}, "average_triage_latency_ms": ...}
+
+GET /api/meta/providers -> 200
+{"active_provider":"simulated","recent_outcomes":[{"provider":"simulated","latency_ms":0,"fallback":false}, ...]}
+
+GET /health -> 200 {"status":"ok"}
+GET /ready -> 200 {"status":"ready"}
+```
+Every status code and body shape matches this spec's Deliverables section exactly (404 `detail` string, 409 `detail` object naming both statuses, 400 FastAPI-native field-error list). The manually-created verification row was deleted afterward via direct SQL; not left in the seed data.
+
+**New finding, disclosed, not silently fixed:** `docker compose up -d --build backend` (unmodified) crashes at startup — `KeyError: 'TRIAGE_PROVIDER'` in `providers/triage/factory.py:44`, because `TRIAGE_PROVIDER` is set in none of `.env`, `.env.example`, or `compose.yaml`'s backend `environment:` block. This is a real, pre-existing gap that this phase's `main.py` change exposes for the first time — no earlier phase's `main.py` ever called `get_triage_provider()`. The crash itself is correct, intended behavior (`providers/triage/factory.py`'s own docstring: an unset/bad value must fail fast at startup, per ADR 0001) — the gap is that the dev compose stack has never actually supplied a value for it to fail-fast or succeed on. Not fixed here: `compose.yaml`/`.env` are shared config outside this phase's Deliverables list, and picking a default silently would be exactly the kind of undisclosed decision `docs/WORKFLOW.md` calls out. Manual verification above used an ad-hoc container with `TRIAGE_PROVIDER=simulated` passed directly, touching no tracked file. **Needs a decision:** add `TRIAGE_PROVIDER=simulated` (or another value) to `.env.example` and `compose.yaml`'s backend `environment:` block, so `docker compose up` works unmodified.
+
+**Scope discipline:** `docs/RUBRIC-CHECKLIST.md` was read but not edited — updating it wasn't a named Deliverable this phase (consistent with Phase 6's precedent). The relevant Category C line (all endpoints wired) is now substantively true but left for the user to check off.
+
+**Cleanup:** all ad-hoc containers (`civicpulse-test-runner`, `backend-verify`) removed; `postgres`/`redis` stopped; `backend` container removed (image `civicpulse-backend:dev` left built, since compose can't currently boot it standalone — see finding above).
+
+**Three-failure-mode audit:** no silent decisions (the `TRIAGE_PROVIDER` gap and the exception-handler signature widening are both disclosed above, not buried); no unverified claims (every status/body pasted is real output, not described); no undisclosed scope creep (`routes/dependencies.py` addition disclosed under Deviations).

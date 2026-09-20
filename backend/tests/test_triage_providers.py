@@ -101,11 +101,6 @@ class TestFactory:
         with pytest.raises(KeyError):
             get_triage_provider()
 
-    def test_factory_fails_fast_on_not_yet_implemented_llm(self, monkeypatch):
-        monkeypatch.setenv("TRIAGE_PROVIDER", "llm")
-        with pytest.raises(KeyError):
-            get_triage_provider()
-
     def test_factory_fails_fast_on_not_yet_implemented_ollama(self, monkeypatch):
         monkeypatch.setenv("TRIAGE_PROVIDER", "ollama")
         with pytest.raises(KeyError):

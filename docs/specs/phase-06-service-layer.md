@@ -1,5 +1,5 @@
 # Phase 06: Service layer
-Status: not started
+Status: done
 Depends on: Phase 4 (repositories — `backend/app/repositories/complaints.py`), Phase 5a (RuleBasedTriage + SimulatedTriage — the minimum IMPLEMENTATION-PLAN.md names for this phase; Phase 5b/LLMTriage is also already done and usable, but not required by this phase)
 Reads first: `docs/CONTRACTS.md` (§2.2 status state machine, §2.5 TriageProvider/engineering requirements 1–7, mandatory Determinism test), `docs/adr/0001-provider-interface.md`, `docs/IMPLEMENTATION-PLAN.md` (Phase 6 section), `backend/app/repositories/complaints.py`, `backend/app/providers/triage/factory.py`, `backend/app/providers/triage/base.py`, `backend/app/providers/triage/simulated.py`
 
@@ -58,4 +58,260 @@ If anything encountered during Plan drafting conflicts with `docs/CONTRACTS.md`,
 
 ## Plan
 
+### OQ2 (get_stats() shape) — closed, not genuinely open
+
+Re-read `backend/app/repositories/complaints.py:136-161` directly. `stats_summary()` already returns a fully shaped, JSON-serializable dict:
+
+```python
+return {
+    "counts_by_status": {row.status: row.n for row in by_status},
+    "counts_by_category": {row.category: row.n for row in by_category},
+    "average_triage_latency_ms": float(avg_latency) if avg_latency is not None else 0.0,
+}
+```
+
+This is not raw row data — the SQL already groups, the Python already turns rows into `{key: count}` dicts, and `None` (no rows yet) is already normalized to `0.0`. The function's own docstring frames this as "raw aggregate data" with "response shape ... Service/route concerns for a later phase," but that framing is stale relative to what the code actually does — there is no unshaped data left for a later phase to shape. **OQ2 is closed**: `get_stats()` is a true one-line passthrough, nothing added:
+
+```python
+async def get_stats() -> dict[str, Any]:
+    return await repositories.complaints.stats_summary()
+```
+
+If a future phase's route/frontend needs a different key naming or nesting, that's a Phase 7 route-serialization decision (e.g. a Pydantic response model), not a reason to touch this function now.
+
+### OQ3 (missing complaint ID) — proposed resolution, for approval
+
+Proposing `NotFoundError`, same file and same shape pattern as `IllegalTransitionError`:
+
+```python
+# backend/app/services/exceptions.py
+class IllegalTransitionError(Exception):
+    def __init__(self, current_status: str, attempted_status: str) -> None:
+        self.current_status = current_status
+        self.attempted_status = attempted_status
+        super().__init__(f"{current_status} -> {attempted_status} is not a legal transition")
+
+
+class NotFoundError(Exception):
+    def __init__(self, complaint_id: uuid.UUID) -> None:
+        self.complaint_id = complaint_id
+        super().__init__(f"complaint {complaint_id} not found")
+```
+
+`change_status()` raises `NotFoundError(complaint_id)` when `repositories.complaints.get_by_id()` returns `None`, instead of silently propagating `None` as the Spec's Open Question originally floated. Rationale for proposing the typed exception over propagating `None`: `change_status()`'s success path already returns a `dict[str, Any]` (the updated row), so a `None` return would be a third, untyped meaning ("not found") layered onto a function whose two other outcomes are "return a dict" or "raise `IllegalTransitionError`" — inconsistent and easy for a Phase 7 caller to miss with a truthiness check. A typed exception makes both failure modes of `change_status()` symmetric and equally impossible to silently ignore. **This is a proposal, not a decision** — flagging for approval alongside the rest of this Plan.
+
+### Files touched, in order
+
+1. `backend/app/services/exceptions.py` — `IllegalTransitionError`, `NotFoundError` (written first; `complaints.py` imports from it).
+2. `backend/app/services/complaints.py` — transition table, `change_status()`, `submit_complaint()`, `get_stats()`.
+3. `backend/tests/test_services_complaints.py`.
+
+### The transition table
+
+Per `docs/CONTRACTS.md` §2.2, as an explicit set of legal `(from, to)` pairs — not a chain of `if`s:
+
+```python
+_LEGAL_TRANSITIONS: frozenset[tuple[str, str]] = frozenset({
+    ("open", "in_progress"),
+    ("in_progress", "resolved"),
+    ("open", "rejected"),
+    ("in_progress", "rejected"),
+})
+```
+
+`resolved` and `rejected` are terminal by construction — they simply never appear as the first element of any tuple, so any transition attempted from either falls straight into the "not in the table" branch, with no special-cased terminal-state check needed.
+
+```python
+async def change_status(complaint_id: uuid.UUID, new_status: str) -> dict[str, Any]:
+    complaint = await repositories.complaints.get_by_id(complaint_id)
+    if complaint is None:
+        raise NotFoundError(complaint_id)
+
+    current_status = complaint["status"]
+    if (current_status, new_status) not in _LEGAL_TRANSITIONS:
+        raise IllegalTransitionError(current_status, new_status)
+
+    updated = await repositories.complaints.update_status(complaint_id, new_status)
+    assert updated is not None  # existence just confirmed above; no concurrent-delete handling in scope
+    return updated
+```
+
+### The fallback wrap — exactly where and what it catches
+
+Found while reviewing the Deliverables, not assumed: it wraps **only the `await provider.triage(text, location)` call itself**, inside `submit_complaint()` — nothing wraps the factory (the factory isn't called here at all; `provider` arrives as a parameter, per OQ1's resolution in the Spec). It catches bare `Exception` (not `BaseException` — `asyncio.CancelledError` is a `BaseException` in the versions of Python this project targets, so cancellation still propagates untouched; no special-casing needed for that). It is deliberately broad rather than scoped to `RuntimeError` (what `SimulatedTriage(always_raise=True)` happens to raise) or to `LLMTriage`'s own exception types, because the mandatory test's wording — "given a provider that always raises" — is provider-agnostic, and a narrower catch would silently stop protecting the very test this exists to satisfy the moment a *different* provider's failure mode raises something else (e.g. a hypothetical `OllamaTriage`'s connection error):
+
+```python
+async def submit_complaint(
+    provider: TriageProvider, *, text: str, location: str, reporter_contact: str | None
+) -> dict[str, Any]:
+    start = time.monotonic()
+    try:
+        result = await provider.triage(text, location)
+    except Exception:
+        logger.warning("triage_provider_raised_falling_back", extra={"provider": provider.name})
+        fallback = await RuleBasedTriage().triage(text, location)
+        result = TriageResult(
+            category=fallback.category,
+            priority=fallback.priority,
+            summary=fallback.summary,
+            confidence=fallback.confidence,
+            triaged_by="rules:fallback",
+        )
+    triage_latency_ms = int((time.monotonic() - start) * 1000)
+
+    return await repositories.complaints.create(
+        complaint_text=text,
+        location=location,
+        reporter_contact=reporter_contact,
+        category=result.category.value,
+        priority=result.priority.value,
+        ai_summary=result.summary,
+        triaged_by=result.triaged_by,
+        triage_latency_ms=triage_latency_ms,
+    )
+```
+
+Note this mirrors `LLMTriage`'s own internal fallback shape exactly (fresh `RuleBasedTriage()` instance, `triaged_by` force-overwritten to the literal `"rules:fallback"` rather than trusting whatever the fallback provider's own `.name` reports) — for `LLMTriage` specifically this outer wrap is a no-op in practice, since `llm.py`'s `triage()` never raises (every code path returns a `TriageResult`, confirmed in Phase 5b's As-Built); the wrap exists for every provider that doesn't already give that guarantee itself.
+
 ## As-Built
+
+Implemented exactly as Planned. Three files, in the planned order:
+`backend/app/services/exceptions.py`, `backend/app/services/complaints.py`,
+`backend/tests/test_services_complaints.py`.
+
+### Deviation from the Plan (one, trivial)
+
+The Plan's `change_status()` sketch put the "no concurrent-delete handling"
+comment on the same line as `assert updated is not None`, which ruff's
+`E501` (line too long, >100 cols) rejected. Moved the comment to its own
+line above the assert — no logic change. This is the only difference
+between the Plan's code sketches and what's actually committed.
+
+### Verification — real Postgres, no mocks
+
+Postgres brought up via `docker compose up -d postgres` (network
+`assign_1_internal`, container reported `healthy`). Tests ran in an
+ephemeral `python:3.12-slim` container with `.[dev]` installed on the
+default bridge network (for `pip install` — the `internal` compose network
+has no outside route, by design, and pip needs one), then joined to
+`assign_1_internal` via `docker network connect` for DB access — so the
+project's own network-segmentation deduction line (§5.3) was never
+violated to make these tests reachable. `alembic upgrade head` and the
+seed script were run first (36 rows already present, idempotent).
+
+**New file alone, run 1:**
+```
+collected 15 items
+tests/test_services_complaints.py::TestStateMachine::test_legal_transitions_succeed[open-in_progress] PASSED
+tests/test_services_complaints.py::TestStateMachine::test_legal_transitions_succeed[in_progress-resolved] PASSED
+tests/test_services_complaints.py::TestStateMachine::test_legal_transitions_succeed[open-rejected] PASSED
+tests/test_services_complaints.py::TestStateMachine::test_legal_transitions_succeed[in_progress-rejected] PASSED
+tests/test_services_complaints.py::TestStateMachine::test_illegal_transitions_raise[resolved-open] PASSED
+tests/test_services_complaints.py::TestStateMachine::test_illegal_transitions_raise[resolved-in_progress] PASSED
+tests/test_services_complaints.py::TestStateMachine::test_illegal_transitions_raise[rejected-open] PASSED
+tests/test_services_complaints.py::TestStateMachine::test_illegal_transitions_raise[rejected-in_progress] PASSED
+tests/test_services_complaints.py::TestStateMachine::test_illegal_transitions_raise[open-resolved] PASSED
+tests/test_services_complaints.py::TestStateMachine::test_illegal_transitions_raise[in_progress-open] PASSED
+tests/test_services_complaints.py::TestStateMachine::test_missing_complaint_raises_not_found PASSED
+tests/test_services_complaints.py::TestTriageOrchestration::test_submit_complaint_with_simulated_provider_round_trips PASSED
+tests/test_services_complaints.py::TestTriageOrchestration::test_submit_complaint_with_rule_based_provider_round_trips PASSED
+tests/test_services_complaints.py::TestMandatoryDeterminism::test_provider_that_always_raises_falls_back_deterministically PASSED
+tests/test_services_complaints.py::TestStats::test_get_stats_matches_seed_distribution PASSED
+============================== 15 passed in 0.88s ==============================
+```
+
+**New file alone, run 2 (order-dependency check):**
+```
+collected 15 items
+... (identical 15 tests, identical order, all PASSED)
+============================== 15 passed in 0.82s ==============================
+```
+
+**Combined with `test_repositories.py`, `test_schema.py`, `test_triage_providers.py`, `test_llm_triage.py`** (regression check now that this phase's tests share a real DB with Phase 3/4's):
+```
+collected 134 items
+... (all 134 PASSED, including all 8 test_repositories.py cases,
+    2 test_schema.py cases, 15 test_services_complaints.py cases,
+    11 test_triage_providers.py cases + 36×2 seed-fixture parametrizations,
+    26 test_llm_triage.py cases)
+============================= 134 passed in 2.48s ==============================
+```
+Re-run after the ruff-driven comment-placement fix, same combined set:
+```
+134 passed in 2.19s
+```
+
+**ruff check .** (from `backend/`, after fix): `All checks passed!`
+
+**mypy app** (from `backend/`): `Success: no issues found in 23 source files`
+
+(One incidental finding, not a code defect: `pip install ".[dev]"` left a
+root-owned `build/` directory under `backend/` — a setuptools side effect
+of an editable/sdist-style install in the ephemeral container, already
+covered by `.gitignore` and confirmed absent from `git status`. Removed
+it anyway for hygiene: `rm -rf build`.)
+
+### Manual Mandatory Determinism demonstration (outside pytest)
+
+Per `docs/CONTRACTS.md` §2.5: *"Write this test if you write no other:
+given a provider that always raises, POST /api/complaints still returns
+201 and triaged_by == 'rules:fallback'."* (201/routes don't exist until
+Phase 7; this demonstrates the service-layer half of that guarantee, same
+precedent as the automated test above.) Ran directly against the real DB,
+row cleaned up after:
+```
+triage_provider_raised_falling_back
+triaged_by: rules:fallback
+status: open
+category: other
+cleanup done
+```
+
+### No-secrets check
+
+```
+$ git status --short
+ M docs/specs/phase-06-service-layer.md
+?? backend/app/services/complaints.py
+?? backend/app/services/exceptions.py
+?? backend/tests/test_services_complaints.py
+$ grep -rn "change-me\|AIzaSy\|api_key.*=.*['\"][A-Za-z0-9]" backend/app/services backend/tests/test_services_complaints.py docs/specs/phase-06-service-layer.md
+no literal secrets found
+```
+
+### RUBRIC-CHECKLIST.md — audited, not edited
+
+Checked whether this phase closes either of the two candidate Category C
+lines. Neither does, and neither was touched:
+- "Status state machine as an explicit transition table; invalid
+  transitions 409" (3 marks) — the transition table and its enforcement
+  (`IllegalTransitionError`) are done and tested, but the "409" half of
+  this line is an HTTP-layer behaviour that doesn't exist until Phase 7.
+  Left `[ ]`.
+- "triage_latency_ms recorded and surfaced through /api/meta/providers"
+  (2 marks) — recording is done (`submit_complaint()` measures and
+  persists it), but "surfaced through /api/meta/providers" needs a route
+  that doesn't exist yet. Left `[ ]`.
+
+Updating `RUBRIC-CHECKLIST.md` was not a Deliverable in this phase's
+approved Plan, so it was audited for accuracy but not edited — avoiding
+undisclosed scope creep in either direction (silently checking a
+half-true line, or silently rewriting the checklist unasked).
+
+### Failure-mode audit (`docs/WORKFLOW.md`)
+
+- **Silent decisions:** none beyond the one already flagged and approved
+  in the Plan (OQ3's `NotFoundError`) and the comment-placement deviation
+  noted above, which is a formatting change with no behavioural effect.
+- **Unverified claims:** none — every Deliverable has pasted output above;
+  the manual Determinism demonstration was run for real, not assumed from
+  the pytest pass.
+- **Undisclosed scope creep:** none. No file outside the Plan's three-file
+  list was created or modified. `RUBRIC-CHECKLIST.md` was read for audit
+  purposes only, per the paragraph above, and left untouched since editing
+  it wasn't part of this phase's approved scope.
+
+### Postgres teardown
+
+`docker compose stop postgres` after verification — no long-running
+containers left behind by this session.

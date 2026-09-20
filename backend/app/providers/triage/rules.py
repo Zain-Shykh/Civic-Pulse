@@ -80,4 +80,5 @@ class RuleBasedTriage:
             priority=priority,
             summary=_summarize(text),
             confidence=_MATCH_CONFIDENCE if matched else _DEFAULT_CONFIDENCE,
+            triaged_by="rules",
         )

@@ -30,6 +30,7 @@ class TriageResult(BaseModel):
     priority: Priority
     summary: str = Field(max_length=140)
     confidence: float = Field(ge=0.0, le=1.0)
+    triaged_by: str
 
 
 class TriageProvider(Protocol):

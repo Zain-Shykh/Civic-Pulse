@@ -46,6 +46,7 @@ class TestTriageResultShape:
         assert isinstance(result.priority, Priority)
         assert len(result.summary) <= 140
         assert 0.0 <= result.confidence <= 1.0
+        assert result.triaged_by == "rules"
 
     def test_rule_based_triage_never_raises_on_no_keyword_match(self):
         result = RuleBasedTriage().triage("asdf qwer zxcv nonsense input", "nowhere")
@@ -65,6 +66,7 @@ class TestTriageResultShape:
         assert isinstance(result.priority, Priority)
         assert len(result.summary) <= 140
         assert 0.0 <= result.confidence <= 1.0
+        assert result.triaged_by == "simulated"
 
     def test_simulated_triage_cycles_deterministically(self):
         sequence_a = [SimulatedTriage().triage("x", "y") for _ in range(6)]

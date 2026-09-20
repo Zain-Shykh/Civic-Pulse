@@ -16,26 +16,32 @@ _FIXTURES: tuple[TriageResult, ...] = (
     TriageResult(
         category=Category.WATER, priority=Priority.HIGH,
         summary="Simulated water complaint", confidence=0.9,
+        triaged_by="simulated",
     ),
     TriageResult(
         category=Category.ELECTRICITY, priority=Priority.NORMAL,
         summary="Simulated electricity complaint", confidence=0.85,
+        triaged_by="simulated",
     ),
     TriageResult(
         category=Category.SANITATION, priority=Priority.LOW,
         summary="Simulated sanitation complaint", confidence=0.8,
+        triaged_by="simulated",
     ),
     TriageResult(
         category=Category.ROADS, priority=Priority.HIGH,
         summary="Simulated roads complaint", confidence=0.9,
+        triaged_by="simulated",
     ),
     TriageResult(
         category=Category.STREETLIGHTS, priority=Priority.NORMAL,
         summary="Simulated streetlights complaint", confidence=0.85,
+        triaged_by="simulated",
     ),
     TriageResult(
         category=Category.OTHER, priority=Priority.LOW,
         summary="Simulated other complaint", confidence=0.75,
+        triaged_by="simulated",
     ),
 )
 

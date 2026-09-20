@@ -193,3 +193,51 @@ Confirms: `TRIAGE_PROVIDER=simulated`/`rules` resolve to the right class with th
 - **Silent decisions:** none beyond the two disclosed above (`StrEnum`, summary truncation) — both are mechanical, not design choices, and both are stated rather than left implicit.
 - **Unverified claims:** none — every claim above is backed by pasted command output, re-run once for the pytest suite to rule out order-dependency.
 - **Undisclosed scope creep:** none. Only the 5 files named in Deliverables were touched; `llm.py`/`ollama.py` untouched per Non-goals; `docs/RUBRIC-CHECKLIST.md` deliberately not touched since no line in it becomes true from this phase's Deliverables alone (unlike Phases 3/4, where it was an explicit deliverable).
+
+---
+
+### Post-hoc amendment — 2026-09-20
+
+This phase was already marked `done` (above) when the following change was made to it. Recorded here as a visible addition, not a rewrite of the original As-Built content above.
+
+**Trigger:** `docs/specs/phase-05b-llm-triage.md`'s Open Question 2 — while designing `LLMTriage`'s fallback reporting, a proposal to mutate `TriageProvider.name` per-call was found to be a real `asyncio` race condition (a shared provider instance mutating `self.name` across concurrent requests' `await` boundaries). The approved resolution instead adds a `triaged_by: str` field directly to `TriageResult`, set fresh by each provider on every call — see `phase-05b-llm-triage.md`'s Open Question 2 for the full race-condition walkthrough and the `docs/CONTRACTS.md` diff.
+
+**What changed in this (Phase 5a) scope as a direct, approved consequence:**
+- `docs/CONTRACTS.md` §2.5 — `TriageResult` gains `triaged_by: str`.
+- `backend/app/providers/triage/base.py` — same field added to the real `TriageResult` model.
+- `backend/app/providers/triage/rules.py` — `RuleBasedTriage.triage()` now sets `triaged_by="rules"` on the `TriageResult` it constructs.
+- `backend/app/providers/triage/simulated.py` — all six fixture `TriageResult`s now set `triaged_by="simulated"`.
+- `backend/tests/test_triage_providers.py` — `test_rule_based_triage_returns_valid_shape` and `test_simulated_triage_returns_valid_shape` gained an assertion on the new field; no other test needed a change (none construct `TriageResult` directly, and `test_simulated_triage_cycles_deterministically`'s equality check already covers the new field implicitly).
+
+**Verification — `python -m pytest tests/test_triage_providers.py -v -o asyncio_mode=auto`, ephemeral `python:3.12-slim` container, `pip install '.[dev]'`, run twice:**
+
+```
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0 -- /usr/local/bin/python
+collecting ... collected 84 items
+
+tests/test_triage_providers.py::TestTriageResultShape::test_rule_based_triage_returns_valid_shape PASSED
+tests/test_triage_providers.py::TestTriageResultShape::test_rule_based_triage_never_raises_on_no_keyword_match PASSED
+tests/test_triage_providers.py::TestTriageResultShape::test_rule_based_triage_summary_respects_length_limit PASSED
+tests/test_triage_providers.py::TestTriageResultShape::test_simulated_triage_returns_valid_shape PASSED
+tests/test_triage_providers.py::TestTriageResultShape::test_simulated_triage_cycles_deterministically PASSED
+tests/test_triage_providers.py::TestTriageResultShape::test_simulated_triage_always_raise PASSED
+tests/test_triage_providers.py::TestTriageResultShape::test_simulated_triage_default_does_not_raise PASSED
+tests/test_triage_providers.py::TestFactory::test_factory_resolves_rules PASSED
+tests/test_triage_providers.py::TestFactory::test_factory_resolves_simulated PASSED
+tests/test_triage_providers.py::TestFactory::test_factory_fails_fast_on_unrecognized_value PASSED
+tests/test_triage_providers.py::TestFactory::test_factory_fails_fast_on_not_yet_implemented_llm PASSED
+tests/test_triage_providers.py::TestFactory::test_factory_fails_fast_on_not_yet_implemented_ollama PASSED
+[... 72 parametrized TestRuleBasedTriageAgainstSeedFixtures cases, one per seed row x {category, priority} ...] PASSED
+
+============================== 84 passed in 0.43s ==============================
+```
+
+Re-run for idempotency: same result, `84 passed in 0.40s`. `ruff check app/providers/triage/ tests/test_triage_providers.py`: `All checks passed!`.
+
+Count unchanged from the original As-Built (84 passed both times) — the new field required no new test cases, only new assertions inside two already-existing tests.
+
+**Audit against `docs/WORKFLOW.md`'s three failure modes, for this amendment specifically:**
+- **Silent decisions:** none — the field addition, its type, and its default-per-provider values were all proposed in `phase-05b-llm-triage.md`'s Open Question 2 and approved before this edit.
+- **Unverified claims:** none — pytest output above is real, pasted, re-run once.
+- **Undisclosed scope creep:** none — only the 5 files listed above were touched for this amendment; no other Phase 5a file was revisited.

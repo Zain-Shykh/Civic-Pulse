@@ -1,5 +1,5 @@
 # Phase 5a: Deterministic triage providers
-Status: not started
+Status: done
 Depends on: Phase 2 (stub files, `TriageProvider` shape referenced in ADR 0001) — nothing from Phase 3 or 4 (`docs/IMPLEMENTATION-PLAN.md`, Phase 5: "Depends on: nothing from Phases 3–4 — this is the most self-contained slice")
 Reads first: `docs/CONTRACTS.md` §2.5 (AI layer), `docs/adr/0001-provider-interface.md`, `docs/IMPLEMENTATION-PLAN.md` (Phase 5 section)
 
@@ -137,4 +137,59 @@ Recommending **omit `"llm"`/`"ollama"` from `_PROVIDERS` entirely for now**, ove
 If anything here conflicts with `docs/CONTRACTS.md` or `docs/adr/0001-provider-interface.md`, or is underspecified beyond what's already flagged under Open Questions above, stop and ask — do not silently resolve.
 
 ## As-Built
-(Not started — filled in after the phase completes.)
+
+All Plan proposals were implemented as approved, with two small deviations from the Plan's literal wording (not its intent), disclosed here rather than silently made:
+
+1. **`Category`/`Priority` implemented as `enum.StrEnum`, not `(str, Enum)`.** The Plan's wording said `str, Enum`; `ruff` (rule `UP042`) flagged that as redundant on Python 3.12 and recommended `StrEnum`. Same runtime behavior (still a `str` subclass, same JSON/comparison semantics) — a lint-driven implementation detail, not a design change.
+2. **`RuleBasedTriage`'s `summary` field wasn't specified in the Plan.** `TriageResult.summary` is mandatory and this provider has no model to generate one from, so it needed a concrete value. Implemented as the input text collapsed (whitespace-normalized) and truncated to fit the 140-char limit, with `...` appended when truncated. Small, mechanical, no real design decision — flagged here rather than left undisclosed.
+
+### Verification — `python -m pytest tests/test_triage_providers.py -v -o asyncio_mode=auto` (real output, ephemeral `python:3.12-slim` container, `pip install '.[dev]'`)
+
+```
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0 -- /usr/local/bin/python
+collecting ... collected 84 items
+
+tests/test_triage_providers.py::TestTriageResultShape::test_rule_based_triage_returns_valid_shape PASSED
+tests/test_triage_providers.py::TestTriageResultShape::test_rule_based_triage_never_raises_on_no_keyword_match PASSED
+tests/test_triage_providers.py::TestTriageResultShape::test_rule_based_triage_summary_respects_length_limit PASSED
+tests/test_triage_providers.py::TestTriageResultShape::test_simulated_triage_returns_valid_shape PASSED
+tests/test_triage_providers.py::TestTriageResultShape::test_simulated_triage_cycles_deterministically PASSED
+tests/test_triage_providers.py::TestTriageResultShape::test_simulated_triage_always_raise PASSED
+tests/test_triage_providers.py::TestTriageResultShape::test_simulated_triage_default_does_not_raise PASSED
+tests/test_triage_providers.py::TestFactory::test_factory_resolves_rules PASSED
+tests/test_triage_providers.py::TestFactory::test_factory_resolves_simulated PASSED
+tests/test_triage_providers.py::TestFactory::test_factory_fails_fast_on_unrecognized_value PASSED
+tests/test_triage_providers.py::TestFactory::test_factory_fails_fast_on_not_yet_implemented_llm PASSED
+tests/test_triage_providers.py::TestFactory::test_factory_fails_fast_on_not_yet_implemented_ollama PASSED
+[... 72 parametrized TestRuleBasedTriageAgainstSeedFixtures cases, one per seed row x {category, priority} ...] PASSED
+
+============================== 84 passed in 0.34s ==============================
+```
+
+Re-run for idempotency: same result, `84 passed in 0.33s`.
+
+### Verification — `ruff check app/providers/triage/ tests/test_triage_providers.py`
+
+```
+All checks passed!
+```
+
+(First run surfaced 11 real issues — `UP042` on both enums, `UP035` on `factory.py`'s `Callable` import, and several `E501` line-length violations in `rules.py`/`simulated.py`. All fixed before this commit; see the As-Built deviation note above for the `StrEnum` one.)
+
+### Verification — manual factory resolution / fail-fast check (real output)
+
+```
+simulated -> SimulatedTriage simulated
+rules -> RuleBasedTriage rules
+bogus -> KeyError: 'bogus'
+llm -> KeyError: 'llm'
+```
+
+Confirms: `TRIAGE_PROVIDER=simulated`/`rules` resolve to the right class with the right `name`; an unrecognized value and the not-yet-implemented `llm` value both fail fast with `KeyError` at the point `get_triage_provider()` is called, per ADR 0001's requirement and the approved Plan's Open Question 3 resolution.
+
+### Audit against `docs/WORKFLOW.md`'s three failure modes
+
+- **Silent decisions:** none beyond the two disclosed above (`StrEnum`, summary truncation) — both are mechanical, not design choices, and both are stated rather than left implicit.
+- **Unverified claims:** none — every claim above is backed by pasted command output, re-run once for the pytest suite to rule out order-dependency.
+- **Undisclosed scope creep:** none. Only the 5 files named in Deliverables were touched; `llm.py`/`ollama.py` untouched per Non-goals; `docs/RUBRIC-CHECKLIST.md` deliberately not touched since no line in it becomes true from this phase's Deliverables alone (unlike Phases 3/4, where it was an explicit deliverable).

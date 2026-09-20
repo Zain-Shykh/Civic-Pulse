@@ -1,8 +1,38 @@
-"""TriageProvider Protocol and TriageResult schema.
+"""TriageProvider Protocol and TriageResult schema — docs/CONTRACTS.md §2.5.
 
-Will hold the exact interface from docs/CONTRACTS.md (§2.5) / ADR 0001 —
-`TriageResult(BaseModel)` and `TriageProvider(Protocol)`. Stub only for
-this phase; the real definitions land with their own spec.
+Category/Priority live here rather than a shared module because this is the
+only consumer so far (see docs/specs/phase-05a-deterministic-triage.md's Plan).
 """
 
-pass
+from enum import StrEnum
+from typing import Protocol
+
+from pydantic import BaseModel, Field
+
+
+class Category(StrEnum):
+    WATER = "water"
+    ELECTRICITY = "electricity"
+    SANITATION = "sanitation"
+    ROADS = "roads"
+    STREETLIGHTS = "streetlights"
+    OTHER = "other"
+
+
+class Priority(StrEnum):
+    HIGH = "high"
+    NORMAL = "normal"
+    LOW = "low"
+
+
+class TriageResult(BaseModel):
+    category: Category
+    priority: Priority
+    summary: str = Field(max_length=140)
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class TriageProvider(Protocol):
+    name: str
+
+    def triage(self, text: str, location: str) -> TriageResult: ...

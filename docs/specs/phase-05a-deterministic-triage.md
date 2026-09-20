@@ -241,3 +241,59 @@ Count unchanged from the original As-Built (84 passed both times) — the new fi
 - **Silent decisions:** none — the field addition, its type, and its default-per-provider values were all proposed in `phase-05b-llm-triage.md`'s Open Question 2 and approved before this edit.
 - **Unverified claims:** none — pytest output above is real, pasted, re-run once.
 - **Undisclosed scope creep:** none — only the 5 files listed above were touched for this amendment; no other Phase 5a file was revisited.
+
+---
+
+### Post-hoc amendment #2 — 2026-09-20
+
+Same discipline as amendment #1 above: a visible addition, not a rewrite of anything above it. This phase was already `done` (and already amended once) when this second change was made.
+
+**Trigger:** `docs/specs/phase-05b-llm-triage.md`'s Open Question 4 — while writing 5b's Plan, `LLMTriage.triage()` was found to need a real network call, but `TriageProvider.triage()` (`docs/CONTRACTS.md` §2.5) was declared synchronous. The Plan initially proposed keeping it synchronous and pushing the event-loop concern to Phase 6. That proposal is now reversed: `TriageProvider.triage()` becomes `async def` everywhere, uniformly, across every provider — because a synchronous `LLMTriage` call would block FastAPI's single event loop for up to `LLMTriage`'s own worst-case retry-inclusive latency (~22s, per Phase 5b's Plan), freezing every other concurrent request on that worker for the duration, not just the one being triaged. That directly undermines the k6/HPA load-test exercise this project needs to produce later (`docs/OPEN-DECISIONS.md` #8, `docs/IMPLEMENTATION-PLAN.md` Phase 11) — a worker that appears to have plenty of spare capacity by CPU/memory metrics could still be fully stalled on a blocked event loop, invisible to the metric the HPA scales on.
+
+**What changed in this (Phase 5a) scope as a direct, approved consequence:**
+- `docs/CONTRACTS.md` §2.5 — `TriageProvider.triage(text, location) -> TriageResult` becomes `async def triage(...) -> TriageResult`.
+- `backend/app/providers/triage/base.py` — same change to the real Protocol.
+- `backend/app/providers/triage/rules.py`, `simulated.py` — both `triage()` methods become `async def`, with no internal `await` — they're coroutine functions returning exactly the same `TriageResult` construction as before, unchanged otherwise.
+- `backend/tests/test_triage_providers.py` — every test method that calls `.triage()` becomes `async def` with `await` added at each of the 84 call sites (including the two list-comprehension call sites in `test_simulated_triage_cycles_deterministically`, which remain valid syntax — `await` inside a list comprehension is permitted when the enclosing function is itself `async def`). `TestFactory`'s tests are unaffected — none of them call `.triage()`, only `get_triage_provider()` and `.name`, both still synchronous. `asyncio_mode=auto` was already configured (`backend/pyproject.toml`, confirmed at Phase 5a's original verification), so no new pytest configuration was needed.
+
+**Diff shape (illustrative, not exhaustive — see the files themselves for the full diff):**
+```diff
+ class TriageProvider(Protocol):
+     name: str
+-    def triage(self, text: str, location: str) -> TriageResult: ...
++    async def triage(self, text: str, location: str) -> TriageResult: ...
+```
+```diff
+ class RuleBasedTriage:
+     name = "rules"
+
+-    def triage(self, text: str, location: str) -> TriageResult:
++    async def triage(self, text: str, location: str) -> TriageResult:
+         lowered = text.lower()
+         ...
+```
+```diff
+-    def test_rule_based_triage_returns_valid_shape(self):
+-        result = RuleBasedTriage().triage(...)
++    async def test_rule_based_triage_returns_valid_shape(self):
++        result = await RuleBasedTriage().triage(...)
+```
+
+**Verification — `python -m pytest tests/test_triage_providers.py -v -o asyncio_mode=auto`, ephemeral `python:3.12-slim` container, `pip install '.[dev]'`, run twice:**
+
+```
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0 -- /usr/local/bin/python
+collecting ... collected 84 items
+
+[... all 84 tests, same names as amendment #1's list, PASSED ...]
+
+============================== 84 passed in 0.46s ==============================
+```
+
+Re-run for idempotency: same result, `84 passed in 0.38s`. `ruff check app/providers/triage/ tests/test_triage_providers.py`: `All checks passed!`. Count unchanged (84 both times) — becoming `async` required no new test cases, only converting existing ones to coroutine functions with `await`.
+
+**Audit against `docs/WORKFLOW.md`'s three failure modes, for this amendment specifically:**
+- **Silent decisions:** none — the sync→async reversal was proposed in `phase-05b-llm-triage.md`'s Open Question 4, with explicit reasoning (event-loop blocking, HPA load-test impact), and approved before this edit.
+- **Unverified claims:** none — pytest output above is real, pasted, re-run once; the reasoning about event-loop blocking is stated as the cited justification for the decision, not claimed as independently re-measured in this amendment (no load test exists yet to measure against — that's Phase 11).
+- **Undisclosed scope creep:** none — only the 4 files listed above were touched; `factory.py` was checked and confirmed to need no change (it never calls `.triage()` itself, only constructs provider instances); no other Phase 5a file was revisited.

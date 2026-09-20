@@ -71,7 +71,7 @@ def _summarize(text: str) -> str:
 class RuleBasedTriage:
     name = "rules"
 
-    def triage(self, text: str, location: str) -> TriageResult:
+    async def triage(self, text: str, location: str) -> TriageResult:
         lowered = text.lower()
         category, matched = _classify_category(lowered)
         priority = _classify_priority(lowered)

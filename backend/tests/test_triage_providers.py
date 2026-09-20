@@ -37,8 +37,8 @@ def _is_known(text: str, known_prefixes: set[str]) -> bool:
 
 
 class TestTriageResultShape:
-    def test_rule_based_triage_returns_valid_shape(self):
-        result = RuleBasedTriage().triage(
+    async def test_rule_based_triage_returns_valid_shape(self):
+        result = await RuleBasedTriage().triage(
             "Water supply stopped since three days, please resolve.", "Karachi"
         )
         assert isinstance(result, TriageResult)
@@ -48,19 +48,19 @@ class TestTriageResultShape:
         assert 0.0 <= result.confidence <= 1.0
         assert result.triaged_by == "rules"
 
-    def test_rule_based_triage_never_raises_on_no_keyword_match(self):
-        result = RuleBasedTriage().triage("asdf qwer zxcv nonsense input", "nowhere")
+    async def test_rule_based_triage_never_raises_on_no_keyword_match(self):
+        result = await RuleBasedTriage().triage("asdf qwer zxcv nonsense input", "nowhere")
         assert result.category == Category.OTHER
         assert result.priority == Priority.NORMAL
         assert result.confidence < 0.7  # default-confidence branch
 
-    def test_rule_based_triage_summary_respects_length_limit(self):
+    async def test_rule_based_triage_summary_respects_length_limit(self):
         long_text = "word " * 200
-        result = RuleBasedTriage().triage(long_text, "somewhere")
+        result = await RuleBasedTriage().triage(long_text, "somewhere")
         assert len(result.summary) <= 140
 
-    def test_simulated_triage_returns_valid_shape(self):
-        result = SimulatedTriage().triage("anything", "anywhere")
+    async def test_simulated_triage_returns_valid_shape(self):
+        result = await SimulatedTriage().triage("anything", "anywhere")
         assert isinstance(result, TriageResult)
         assert isinstance(result.category, Category)
         assert isinstance(result.priority, Priority)
@@ -68,19 +68,19 @@ class TestTriageResultShape:
         assert 0.0 <= result.confidence <= 1.0
         assert result.triaged_by == "simulated"
 
-    def test_simulated_triage_cycles_deterministically(self):
-        sequence_a = [SimulatedTriage().triage("x", "y") for _ in range(6)]
-        sequence_b = [SimulatedTriage().triage("x", "y") for _ in range(6)]
+    async def test_simulated_triage_cycles_deterministically(self):
+        sequence_a = [await SimulatedTriage().triage("x", "y") for _ in range(6)]
+        sequence_b = [await SimulatedTriage().triage("x", "y") for _ in range(6)]
         assert sequence_a == sequence_b
 
-    def test_simulated_triage_always_raise(self):
+    async def test_simulated_triage_always_raise(self):
         provider = SimulatedTriage(always_raise=True)
         with pytest.raises(RuntimeError):
-            provider.triage("x", "y")
+            await provider.triage("x", "y")
 
-    def test_simulated_triage_default_does_not_raise(self):
+    async def test_simulated_triage_default_does_not_raise(self):
         provider = SimulatedTriage()
-        provider.triage("x", "y")  # must not raise
+        await provider.triage("x", "y")  # must not raise
 
 
 class TestFactory:
@@ -116,9 +116,9 @@ class TestRuleBasedTriageAgainstSeedFixtures:
     """Fixture consistency check, not an accuracy test — see module docstring."""
 
     @pytest.mark.parametrize("row", _COMPLAINTS, ids=lambda row: row[0][:40])
-    def test_category_consistency_with_seed_fixture(self, row):
+    async def test_category_consistency_with_seed_fixture(self, row):
         text, _location, _contact, expected_category = row[0], row[1], row[2], row[3]
-        result = RuleBasedTriage().triage(text, row[1])
+        result = await RuleBasedTriage().triage(text, row[1])
         if _is_known(text, _KNOWN_CATEGORY_DISAGREEMENTS):
             assert result.category.value != expected_category, (
                 "Documented disagreement now agrees with the fixture label — "
@@ -128,9 +128,9 @@ class TestRuleBasedTriageAgainstSeedFixtures:
             assert result.category.value == expected_category
 
     @pytest.mark.parametrize("row", _COMPLAINTS, ids=lambda row: row[0][:40])
-    def test_priority_consistency_with_seed_fixture(self, row):
+    async def test_priority_consistency_with_seed_fixture(self, row):
         text, expected_priority = row[0], row[4]
-        result = RuleBasedTriage().triage(text, row[1])
+        result = await RuleBasedTriage().triage(text, row[1])
         if _is_known(text, _KNOWN_PRIORITY_DISAGREEMENTS):
             assert result.priority.value != expected_priority, (
                 "Documented disagreement now agrees with the fixture label — "

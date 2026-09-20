@@ -53,7 +53,7 @@ class SimulatedTriage:
         self.always_raise = always_raise
         self._fixtures = cycle(_FIXTURES)
 
-    def triage(self, text: str, location: str) -> TriageResult:
+    async def triage(self, text: str, location: str) -> TriageResult:
         if self.always_raise:
             raise RuntimeError("SimulatedTriage configured with always_raise=True")
         return next(self._fixtures)

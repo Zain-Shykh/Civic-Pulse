@@ -82,7 +82,7 @@ class TriageResult(BaseModel):
 
 class TriageProvider(Protocol):
     name: str
-    def triage(self, text: str, location: str) -> TriageResult: ...
+    async def triage(self, text: str, location: str) -> TriageResult: ...
 ```
 
 Four implementations, selected by `TRIAGE_PROVIDER`:

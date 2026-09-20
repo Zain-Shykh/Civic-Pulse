@@ -13,6 +13,11 @@ Explicit file list — nothing built outside this list without flagging it.
 What this phase must NOT include yet (this has been one of the most useful
 lines in every spec so far — keep it mandatory).
 
+## Open Questions
+Anything encountered during Spec or Plan drafting that has no citable source
+in CONTRACTS.md/ADRs/IMPLEMENTATION-PLAN.md — stated here for human decision,
+never silently resolved either way.
+
 ## Plan
 Mandatory for every phase, no complexity exceptions — depth scales with
 the phase's actual complexity, existence doesn't. Before writing any code,

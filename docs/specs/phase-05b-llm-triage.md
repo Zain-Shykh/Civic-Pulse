@@ -1,5 +1,5 @@
 # Phase 5b: LLM triage provider
-Status: not started
+Status: done
 Depends on: Phase 5a (`base.py`'s `TriageProvider`/`TriageResult`, `factory.py`'s `_PROVIDERS` dict, `RuleBasedTriage` as the fallback target)
 Reads first: `docs/CONTRACTS.md` §2.5 (AI layer), `docs/adr/0001-provider-interface.md`, `docs/adr/0004-pii-and-data-governance.md`, `docs/architecture/ARCHITECTURE.md` ("The LLM-egress trade-off"), `docs/OPEN-DECISIONS.md` #1 (Gemini provider choice), `docs/IMPLEMENTATION-PLAN.md` (Phase 5 section)
 
@@ -215,3 +215,97 @@ A standard, widely-used practical email pattern (not RFC 5322-complete — nothi
 If anything here conflicts with `docs/CONTRACTS.md`, `docs/adr/0001-provider-interface.md`, or `docs/adr/0004-pii-and-data-governance.md`, or is underspecified beyond what's already flagged under Open Questions above, stop and ask — do not silently resolve.
 
 ## As-Built
+
+All Plan proposals were implemented as approved. Deviations from the Plan's literal wording (not its intent), disclosed here rather than silently made:
+
+1. **`response.text` can be `None` (e.g. a safety-filtered response with no candidate text) — not discussed in the Plan.** `mypy --strict` caught this: `_LLMResponseSchema.model_validate_json` requires `str`. Handled as `response.text or ""`, which routes a `None` text into the same "malformed, fall back, don't retry" path as any other unparseable response — no new branch, just a defensive default. Small and mechanical, same category as 5a's undiscussed summary-truncation deviation.
+2. **`backend/tests/test_triage_providers.py` was touched, which the Plan's "Files to be touched, in order" list did not name.** Unavoidable consequence of Deliverable #4: that file's `test_factory_fails_fast_on_not_yet_implemented_llm` asserted `TRIAGE_PROVIDER=llm` raises `KeyError` — false the moment `"llm"` is wired into `_PROVIDERS`. Removed that one test; the equivalent "llm resolves to the right class" assertion lives in `test_llm_triage.py::TestFactoryResolvesLLM` instead (Deliverable #5's own scope: "exercises all of the above," which includes `factory.py`). No other test in that file was touched.
+3. **The Plan's Verification requirement asked for the redaction regex table "reproduced in the actual `redaction.py` test cases"** — implemented as a `TestRedactionPatterns` class inside `test_llm_triage.py` (Deliverable #5's one named test file) rather than a new `test_redaction.py`, to avoid adding a 6th file beyond the 5 named Deliverables. Same tests, different file placement than the literal phrase might suggest.
+4. **`docs/RUBRIC-CHECKLIST.md` and this file's own `## As-Built`/`Status` line were updated** per this session's explicit instruction, not because the Plan named them as Deliverables — same precedent as Phases 3/4 where a rubric update was an explicit ask, unlike Phase 5a where it deliberately wasn't touched.
+
+### Verification — `python -m pytest tests/test_llm_triage.py -v -o asyncio_mode=auto` (real output, ephemeral `python:3.12-slim` container, `pip install '.[dev]'`)
+
+```
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0 -- /usr/local/bin/python
+collecting ... collected 26 items
+
+tests/test_llm_triage.py::TestSuccessPath::test_valid_structured_response_round_trips PASSED
+tests/test_llm_triage.py::TestMalformedResponse::test_out_of_schema_response_falls_back_without_retry PASSED
+tests/test_llm_triage.py::TestRetryableFailures::test_timeout_retries_then_falls_back PASSED
+tests/test_llm_triage.py::TestRetryableFailures::test_429_retries_then_falls_back PASSED
+tests/test_llm_triage.py::TestRetryableFailures::test_5xx_retries_then_falls_back[500-INTERNAL] PASSED
+tests/test_llm_triage.py::TestRetryableFailures::test_5xx_retries_then_falls_back[503-UNAVAILABLE] PASSED
+tests/test_llm_triage.py::TestRetryableFailures::test_success_on_retry_recovers PASSED
+tests/test_llm_triage.py::TestNonRetryableFailure::test_400_never_retried PASSED
+tests/test_llm_triage.py::TestMandatoryDeterminism::test_provider_that_always_raises_falls_back_deterministically PASSED
+tests/test_llm_triage.py::TestPromptInjectionGuardrail::test_injection_attempt_still_yields_schema_valid_category PASSED
+tests/test_llm_triage.py::TestRedaction::test_phone_and_email_redacted_before_outbound_request PASSED
+tests/test_llm_triage.py::TestRedactionPatterns::test_all_seed_fixture_phone_numbers_redacted PASSED
+tests/test_llm_triage.py::TestRedactionPatterns::test_realistic_and_international_forms_redacted[6 cases] PASSED
+tests/test_llm_triage.py::TestRedactionPatterns::test_two_numbers_in_one_string_both_redacted PASSED
+tests/test_llm_triage.py::TestRedactionPatterns::test_number_split_across_lines_is_a_known_miss PASSED
+tests/test_llm_triage.py::TestRedactionPatterns::test_character_spaced_number_is_a_known_miss PASSED
+tests/test_llm_triage.py::TestRedactionPatterns::test_reference_number_is_a_known_false_positive PASSED
+tests/test_llm_triage.py::TestRedactionPatterns::test_landline_not_redacted_by_design PASSED
+tests/test_llm_triage.py::TestRedactionPatterns::test_email_addresses_redacted PASSED
+tests/test_llm_triage.py::TestRedactionPatterns::test_obfuscated_and_missing_tld_emails_are_known_misses PASSED
+tests/test_llm_triage.py::TestFactoryResolvesLLM::test_factory_resolves_llm PASSED
+
+============================== 26 passed in 0.84s ==============================
+```
+
+Re-run for order-independence: same result, `26 passed in 0.84s`.
+
+Combined with the untouched `test_triage_providers.py` (83 tests, after removing the one now-obsolete `test_factory_fails_fast_on_not_yet_implemented_llm`): `python -m pytest tests/test_triage_providers.py tests/test_llm_triage.py -o asyncio_mode=auto` → **`109 passed`**, re-run once, same result both times.
+
+Zero real network calls in any run: every test constructs `LLMTriage` with `HttpOptions.httpx_async_client` pointed at `httpx.MockTransport`, and the `calls`/`captured_contents` lists each test asserts on only ever contain requests intercepted by that mock — a handler that's never invoked would leave those lists empty and the length assertions would fail, so "the mock was actually used" is proven by the same assertions that check call counts (`test_valid_structured_response_round_trips`: 1 call, URL ends `:generateContent`; retry tests: 2 calls; `test_400_never_retried`: 1 call).
+
+### Verification — `ruff check .` / `mypy app` (real output)
+
+```
+=== RUFF ===
+All checks passed!
+=== MYPY ===
+Success: no issues found in 21 source files
+```
+
+(First `mypy` run surfaced one real issue: `response.text` typed `str | None`, incompatible with `model_validate_json`'s `str | bytes | bytearray` — fixed via the `response.text or ""` deviation disclosed above, not suppressed.)
+
+### Verification — manual factory resolution (real output)
+
+```
+=== TRIAGE_PROVIDER=llm with GEMINI_API_KEY set ===
+<class 'app.providers.triage.llm.LLMTriage'> llm:gemini
+=== TRIAGE_PROVIDER=llm with NO key set (expected: fail loudly, not silently) ===
+Raised ValueError as expected: No API key was provided. Please pass a valid API key. Learn how to create an API key at https://ai.google.dev/gemini-api/docs/api-key.
+```
+
+Confirms `TRIAGE_PROVIDER=llm` resolves to a working `LLMTriage` when a key is present, and fails loudly (not silently, not with a 500 downstream) when it isn't — `google-genai`'s own constructor-time check, not code this phase had to write.
+
+### Verification — no API key literal in the diff (real output)
+
+```
+$ git status --short
+ M backend/app/config.py
+ M backend/app/providers/triage/factory.py
+ M backend/app/providers/triage/llm.py
+ M backend/tests/test_triage_providers.py
+?? backend/app/providers/triage/redaction.py
+?? backend/tests/test_llm_triage.py
+
+$ git diff -- backend/ | grep -Ei "AIza[0-9A-Za-z_-]{20,}|api_key\s*=\s*[\"'][^\"'{]"
+no key-shaped literal found in diff
+```
+
+Every scope-check ran with `git status --short` before committing, per this session's standing discipline — the file list above is exactly the 5 Deliverables plus the one disclosed extra (`test_triage_providers.py`), nothing else.
+
+### Verification — real Gemini API key manual call
+
+**Not performed — stated plainly rather than skipped silently.** No `GEMINI_API_KEY` is present in `.env` or the environment at verification time (`grep -i GEMINI .env` → no file/no match). `docs/IMPLEMENTATION-PLAN.md`'s Phase 5 "Done looks like" line asking for "a manual run against a live Gemini key produces a sane result" remains unverified against a real key; everything else on that line (network-kill → fallback, not a 500) is covered by the mocked timeout/5xx tests above, which exercise the identical fallback code path a real outage would trigger. This should be re-run manually the first time a real key is available, before submission.
+
+### Audit against `docs/WORKFLOW.md`'s three failure modes
+
+- **Silent decisions:** none beyond the four disclosed above (`response.text or ""`, touching `test_triage_providers.py`, the redaction tests' file placement, and the rubric/status housekeeping edits) — all four are stated, not left implicit.
+- **Unverified claims:** none, except the one item explicitly named as unverified above (the live-key manual call) — every other claim is backed by pasted, real command output, re-run once where determinism could plausibly be in question.
+- **Undisclosed scope creep:** none. The 5 Deliverable files were touched plus the one disclosed extra; `ollama.py` untouched (Open Question 1 still open, unresolved — not decided by this work); Redis content-hash caching untouched (Non-goals, Phase 8); no `services/`/`routes/` changes (Non-goals, Phase 6/7); `docs/RUBRIC-CHECKLIST.md` lines left blank where this phase's work doesn't actually make them true (content-hash caching, `triage_latency_ms`/`/api/meta/providers`, and the Category C test-count/coverage line, which would need an explicit coverage run this phase didn't do).

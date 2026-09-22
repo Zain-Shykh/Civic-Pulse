@@ -102,6 +102,7 @@ class TestTriageOrchestration:
             assert created["triaged_by"] == "simulated"
             assert created["triage_latency_ms"] >= 0
             assert created["status"] == "open"
+            assert created["used_fallback"] is False
         finally:
             await _delete(created["id"])
 
@@ -115,6 +116,7 @@ class TestTriageOrchestration:
         try:
             assert created["triaged_by"] == "rules"
             assert created["category"] == "streetlights"
+            assert created["used_fallback"] is False
         finally:
             await _delete(created["id"])
 
@@ -137,6 +139,7 @@ class TestMandatoryDeterminism:
         )
         try:
             assert created["triaged_by"] == "rules:fallback"
+            assert created["used_fallback"] is True
         finally:
             await _delete(created["id"])
 

@@ -65,7 +65,7 @@ async def submit_complaint(
         )
     triage_latency_ms = int((time.monotonic() - start) * 1000)
 
-    return await repository.create(
+    created = await repository.create(
         complaint_text=text,
         location=location,
         reporter_contact=reporter_contact,
@@ -75,6 +75,7 @@ async def submit_complaint(
         triaged_by=result.triaged_by,
         triage_latency_ms=triage_latency_ms,
     )
+    return {**created, "used_fallback": result.triaged_by == "rules:fallback"}
 
 
 async def get_stats() -> dict[str, Any]:

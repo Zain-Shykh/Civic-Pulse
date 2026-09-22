@@ -1,10 +1,10 @@
 """CivicPulse backend entrypoint.
 
-Phase 7: the full API contract (minus caching/rate-limiting — Phase 8, and
-/metrics — Phase 7b) is wired up. The TriageProvider is constructed once
-here, at startup, and stored on app.state (docs/specs/phase-07-routes.md,
-Open Question 4) — routes/dependencies.py reads the same instance back on
-every request.
+Phase 7: the full API contract (minus caching/rate-limiting — Phase 8) is
+wired up. The TriageProvider is constructed once here, at startup, and
+stored on app.state (docs/specs/phase-07-routes.md, Open Question 4) —
+routes/dependencies.py reads the same instance back on every request.
+Phase 7b adds GET /metrics via prometheus-fastapi-instrumentator.
 """
 
 from collections.abc import AsyncIterator
@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from app.exception_handlers import (
     illegal_transition_handler,
@@ -33,6 +34,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="CivicPulse", lifespan=lifespan)
+Instrumentator().instrument(app).expose(app)
+
 app.include_router(health_router)
 app.include_router(complaints_router)
 app.include_router(meta_router)

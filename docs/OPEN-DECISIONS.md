@@ -96,3 +96,12 @@ Original framing kept for reference — spec (§5.1) offers three configurations
 Spec (§4, Bonus): zero-downtime rolling update under live load (+4), GitOps via Argo CD/Flux (+4), deploy-by-digest with Cosign signing (+3), Prometheus + Grafana dashboard (+2), OpenTelemetry tracing frontend→backend→LLM (+2).
 
 **Question:** Attempt any bonus items, and if so which — or treat the 150-mark core as the entire scope until it's solid, given solo bandwidth?
+
+## 11. Prometheus can't reach `/metrics` under the current compose shape
+
+Raised during Phase 7b (`docs/specs/phase-07b-metrics.md`, Open Question 4).
+`GET /metrics` exists and is verified working (`docs/specs/phase-07b-metrics.md`'s As-Built), but `compose.yaml`'s `backend` service publishes no host port at all today — only `frontend` has `ports: ["8080:8080"]`. A real, host-run Prometheus instance cannot scrape `/metrics` under the current compose shape without either publishing a backend port or running Prometheus itself as a compose service on the `edge` network.
+
+This blocks the rest of RUBRIC-CHECKLIST.md's bonus line ("Prometheus scraping /metrics plus a Grafana dashboard, screenshot committed", +2) — the endpoint and instrumentation are done, the scraping/dashboard/screenshot piece isn't, and can't be until this is decided.
+
+**Question:** publish a backend host port (weighing against §5.3's automatic-deduction list — a published *database or cache* port in `compose.prod.yaml` is a −8, but this is the backend API port in dev `compose.yaml`, a different case, not obviously covered by that penalty) versus running Prometheus as its own compose service on `edge`, reaching `backend` by service name the way `frontend` already does. Not decided here — candidate answer for whichever phase actually builds the Prometheus/Grafana pieces (Docker/Compose hardening, `docs/IMPLEMENTATION-PLAN.md` Phase 10, is the natural owner, but that's not decided either).

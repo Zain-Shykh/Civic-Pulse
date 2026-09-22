@@ -119,7 +119,7 @@ Team status: a specific person will probably join, but he has not started and th
 | [ ] | Zero-downtime rolling update demonstrated under live load with zero failed requests | +4 | |
 | [ ] | GitOps: Argo CD or Flux reconciling the cluster from the repository | +4 | |
 | [ ] | Deploy by image digest rather than tag, with Cosign signing and verification in CI | +3 | |
-| [ ] | Prometheus scraping /metrics plus a Grafana dashboard, screenshot committed | +2 | |
+| [ ] | Prometheus scraping /metrics plus a Grafana dashboard, screenshot committed | +2 | Partial: `GET /metrics` + instrumentation built (Phase 7b, `docs/specs/phase-07b-metrics.md`, all four required metrics verified live). Still needed for the +2: a scraping Prometheus instance, a Grafana dashboard, and a committed screenshot — none of that exists yet, and `/metrics` isn't reachable from the host under the current compose shape (`docs/OPEN-DECISIONS.md`) |
 | [ ] | OpenTelemetry tracing across frontend → backend → LLM call | +2 | |
 
 ## §5.3 Automatic deductions — checklist to *avoid*, not earn

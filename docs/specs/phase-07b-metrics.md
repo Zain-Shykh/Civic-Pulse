@@ -1,5 +1,5 @@
 # Phase 7b: Observability middleware
-Status: not started
+Status: done
 Depends on: Phase 7 (routes)
 Reads first: docs/CONTRACTS.md §2.2 (the /metrics row), docs/RUBRIC-CHECKLIST.md (Bonus section), docs/architecture/ARCHITECTURE.md (network design), backend/app/services/complaints.py (existing logging precedent), backend/app/main.py (router/middleware house style)
 
@@ -211,4 +211,149 @@ If anything here conflicts with CONTRACTS.md or is underspecified, stop and
 ask — do not silently resolve.
 
 ## As-Built
-(empty)
+
+Implemented exactly against the approved Plan (commit `8c55481`) — the
+five-file list (`pyproject.toml`, `observability.py`, `services/complaints.py`,
+`routes/complaints.py`, `main.py`), plus the two new test files the Plan
+already anticipated as an implementation-time detail (`test_routes_metrics.py`
+new file; `test_services_complaints.py` extended with `used_fallback`
+assertions on its existing tests, no new test functions needed there).
+`routes/complaints.py`'s module docstring updated per this round's rider,
+disclosing that `create_complaint()` also records two Prometheus metrics.
+
+### Deviation 1 — dependency version, disclosed
+
+The Plan specified `prometheus-fastapi-instrumentator==7.1.0`. Installing
+it forced `starlette` from `1.6.0` (fastapi `0.141.1`'s own preferred
+version) down to `0.52.1` (`7.1.0` pins `starlette<1.0.0,>=0.30.0`). Every
+real request then crashed inside the instrumentator's own middleware:
+
+```
+AttributeError: '_IncludedRouter' object has no attribute 'path'
+  File ".../prometheus_fastapi_instrumentator/routing.py", line 55, in _get_route_name
+    route_name = route.path
+```
+
+Root cause, confirmed by reading both libraries' source directly: FastAPI
+(>= 0.116) wraps routers registered via `include_router()` in an internal
+`_IncludedRouter` object with no `.path` attribute; `7.1.0`'s hand-rolled
+route-name resolver (written against an older Starlette/FastAPI route
+model) doesn't know about it and crashes on every single request, not just
+`/metrics` — this would have broken every endpoint in production.
+`prometheus-fastapi-instrumentator==8.1.0`'s own `routing.py` explicitly
+documents and fixes exactly this case (`_effective_routes()`, comment:
+*"FastAPI (>= 0.116) represents routers registered via `include_router`
+with an internal `_IncludedRouter` object..."*), and requires
+`starlette>=1.0.0,<2.0.0` — compatible with fastapi's own preferred
+`1.6.0`, no downgrade forced. Repinned `pyproject.toml` to `8.1.0`.
+Not a re-decision of Open Question 1 (the library choice itself is
+unchanged) — a version correction found during Plan-time verification,
+disclosed rather than silently swapped in.
+
+### Deviation 2 — test-hygiene bug, found and fixed before finalizing
+
+`test_metrics_returns_all_four_required_metric_families` originally
+created a complaint via `POST` and never deleted it — every other test in
+both `test_routes_complaints.py` and `test_routes_metrics.py` cleans up in
+a `finally`; this one didn't. Confirmed the leak directly (`SELECT count(*)
+FROM complaints` went from 36 seed rows to 37 after one run) and fixed it
+to match house style before this commit.
+
+### Verification — real output, pasted in full
+
+**`ruff check .`** (local venv, after repinning to `8.1.0`):
+```
+All checks passed!
+```
+
+**`mypy app`**:
+```
+Success: no issues found in 31 source files
+```
+
+**Full suite, inside a container joined to `assign_1_internal` (same
+established pattern as Phases 6-7 — `docker compose up -d postgres redis`,
+`alembic upgrade head`, seed script, then `pytest` in a container on the
+network, not on the host, since `compose.yaml` publishes no DB/cache
+ports):**
+```
+======================= 155 passed, 2 warnings in 1.46s ========================
+```
+(153 from Phase 7 + 2 new: both `test_routes_metrics.py` cases.)
+
+**Standalone new-test run** (`pytest tests/test_routes_metrics.py -v`):
+```
+tests/test_routes_metrics.py::TestMetricsEndpoint::test_metrics_returns_all_four_required_metric_families PASSED [ 50%]
+tests/test_routes_metrics.py::TestMetricsEndpoint::test_fallback_counter_increments_on_provider_that_always_raises PASSED [100%]
+======================== 2 passed, 2 warnings in 0.63s =========================
+```
+
+**Fallback-counter delta, real values** (ad-hoc script against the real app,
+not summarized):
+```
+before: 0.0
+POST status: 201 triaged_by: rules:fallback used_fallback: True
+after: 1.0
+delta: 1.0
+```
+
+**Services-layer `used_fallback` assertions** (extended, not new, tests —
+part of the 155-pass run above): `test_submit_complaint_with_simulated_provider_round_trips`
+and `test_submit_complaint_with_rule_based_provider_round_trips` both assert
+`created["used_fallback"] is False`; `test_provider_that_always_raises_falls_back_deterministically`
+asserts `is True`. All three pass (see full-suite output above).
+
+**Manual verification against the built image** (`civicpulse-backend:dev`,
+via `docker compose up -d --build backend`, hit from a container joined to
+`assign_1_internal` since `backend` publishes no host port — real
+`GET /metrics` output, truncated to the relevant families; full output
+included every Python/process default metric too):
+```
+# HELP triage_latency_seconds Time spent in the triage provider call, in seconds.
+# TYPE triage_latency_seconds histogram
+triage_latency_seconds_bucket{le="0.005"} 1.0
+...
+triage_latency_seconds_count 1.0
+triage_latency_seconds_sum 0.0
+
+# HELP triage_fallback_total Count of complaints triaged via the rules-based fallback.
+# TYPE triage_fallback_total counter
+triage_fallback_total 0.0
+
+# HELP http_requests_total Total number of requests by method, status and handler.
+# TYPE http_requests_total counter
+http_requests_total{handler="/health",method="GET",status="2xx"} 2.0
+http_requests_total{handler="/api/complaints",method="POST",status="2xx"} 1.0
+
+# HELP http_request_duration_seconds Latency with only few buckets by handler. Made to be only used if aggregation by handler is important.
+# TYPE http_request_duration_seconds histogram
+http_request_duration_seconds_bucket{handler="/api/complaints",le="0.1",method="POST"} 1.0
+...
+http_request_duration_seconds_sum{handler="/api/complaints",method="POST"} 0.06866313307546079
+```
+All four CONTRACTS.md §2.2 metrics present and real: request count
+(`http_requests_total`), request latency histogram
+(`http_request_duration_seconds`), triage latency (`triage_latency_seconds`),
+fallback counter (`triage_fallback_total`).
+
+**Cleanup confirmed:** every row created during verification (route-level
+tests, the ad-hoc fallback script, the manual `docker compose` POST) was
+deleted afterward; `SELECT count(*) FROM complaints` back to exactly 36
+(the seed count) before tearing down. Ephemeral test-runner container and
+the `docker compose` stack both removed (`docker rm -f`,
+`docker compose down`); named volumes (`pgdata`, `redisdata`) left intact.
+
+### Three-failure-mode audit
+
+- **Silent decisions:** none beyond what OQ1/OQ2/the docstring rider
+  already settled — the `prometheus-fastapi-instrumentator` version bump
+  (7.1.0 → 8.1.0) is disclosed above as a correction, not left implicit;
+  the dropped `routes/metrics.py` file was already disclosed in the
+  Plan-commit round, not re-litigated here.
+- **Unverified claims:** none — every Verification-required item above is
+  real, pasted command/script output, not a summary or an assertion of
+  success without evidence.
+- **Undisclosed scope creep:** none. Touched exactly the Plan's five files
+  plus the two test files the Plan already named as implementation-time
+  choices. `RUBRIC-CHECKLIST.md`'s bonus line and `OPEN-DECISIONS.md` were
+  updated as explicitly instructed this round, not as unrequested extras.

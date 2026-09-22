@@ -228,7 +228,11 @@ order below doesn't map 1:1 onto the lettered list.
      touching the triage provider or the repository at all); then checks
      the triage-result cache before calling `provider.triage(...)`; then
      invalidates `stats:aggregate` after a successful create (same as
-     today's create path, now also touching the cache).
+     today's create path, now also touching the cache). Return value
+     gains a second new field alongside `used_fallback`: **`cache_hit:
+     bool`** (correction, 2026-09-23 — see "On a cache hit" below),
+     `True` only when this call's triage result came from the triage
+     cache, independent of whether that result happens to be a fallback.
    - `get_meta_providers()` — adds `triage_cache_hit_rate` to its returned
      dict.
    Touched fifth: needs `cache.py` (step 2) and the new exception (step 3)
@@ -237,12 +241,20 @@ order below doesn't map 1:1 onto the lettered list.
 6. **`backend/app/routes/complaints.py`** — `create_complaint()` resolves
    the client IP (`request.headers.get("x-real-ip") or request.client.host
    if request.client else "unknown"`) and passes it to
-   `services.submit_complaint(..., client_ip=...)`. No other change to this
-   route; the existing metrics-recording lines (Phase 7b) are unaffected —
+   `services.submit_complaint(..., client_ip=...)`.
    `RateLimitExceededError` is raised inside the service call, before
    `create_complaint()`'s own metrics lines ever run, and is caught by the
-   global handler (step 4), not by this route. Touched sixth: needs
-   `submit_complaint()`'s new signature (step 5) to exist first.
+   global handler (step 4), not by this route.
+   **Correction, 2026-09-23:** this route's existing
+   `TRIAGE_FALLBACK_TOTAL` increment (Phase 7b) is *not* left unchanged as
+   originally stated here — it's now gated:
+   `if created["used_fallback"] and not created["cache_hit"]:
+   TRIAGE_FALLBACK_TOTAL.inc()`, so a triage-cache replay of an old
+   fallback never increments the live-health counter a second time. The
+   docstring rider Phase 7b added to this route needs a one-clause update
+   to say so.
+   Touched sixth: needs `submit_complaint()`'s new signature (step 5) to
+   exist first.
 
 7. **`backend/app/routes/stats.py`** — `get_stats()` unpacks
    `(data, hit)` from the service call and returns a `Response` with the
@@ -322,6 +334,15 @@ provider call or a fallback — one `TriageResult` variable regardless of
 which of the three paths produced it, matching the existing fallback
 branch's own shape.
 
+**Correction, 2026-09-23:** no new `cache.py` function is needed for the
+`cache_hit`/live-fallback distinction described above —
+`get_triage_cache(text, location)` already returns `dict | None`
+(unchanged from the signature above), and its caller in
+`services/complaints.py` already knows whether that call returned
+something. `cache_hit` is derived at the call site
+(`cached = await get_triage_cache(...); cache_hit = cached is not None`),
+not inside `providers/cache.py`.
+
 **On a cache hit,** `triage_latency_ms` is still measured as this
 request's own elapsed time around the triage step (the cache lookup, not
 the original provider call) — the metric's meaning stays "time this
@@ -329,8 +350,37 @@ request spent in the triage step," whichever path it took, consistent
 with how `TRIAGE_LATENCY_SECONDS` is already documented in
 `observability.py`. `triaged_by` is preserved verbatim from the cached
 result (e.g. still `"llm:gemini"`) — a cache hit changes *cost*, not
-*attribution*; `used_fallback`'s existing derivation
-(`triaged_by == "rules:fallback"`) needs no change.
+*attribution*.
+
+> **Correction, 2026-09-23 — the sentence originally here was wrong.**
+> It claimed `used_fallback`'s existing derivation
+> (`triaged_by == "rules:fallback"`) "needs no change" on a cache hit.
+> That's overturned: `used_fallback`'s own derivation and meaning are
+> unchanged (still exactly `triaged_by == "rules:fallback"`, still what
+> gets persisted and what `/api/meta/providers`'s `recent_outcomes`
+> reports) — but a *second*, new field is needed alongside it, because
+> `TRIAGE_FALLBACK_TOTAL` must **not** increment on a cache-replayed
+> fallback, only on a live one.
+>
+> **Why:** `TRIAGE_FALLBACK_TOTAL`'s purpose is a live Gemini-health
+> signal — something to alert on. "How many stored complaints ended up
+> rules-triaged" is always answerable later by a direct query against
+> `triaged_by`, independent of any live counter. If a cache replay of an
+> old fallback kept incrementing the counter, it would stay elevated for
+> up to 24h (the triage-cache TTL) after Gemini actually recovered —
+> actively misleading for anyone watching it operationally.
+>
+> **Mechanism:** `submit_complaint()`'s return value gains a second field,
+> `cache_hit: bool` — whether *this call* was served from the triage
+> cache, independent of `used_fallback`. `get_triage_cache(...)` already
+> returns `dict | None` (step 2's signature, unchanged — no new function
+> needed there, the caller already knows whether it got something back);
+> `services/complaints.py` sets `cache_hit = cached is not None` at the
+> point it calls `get_triage_cache`. `routes/complaints.py`'s
+> `create_complaint()` then increments `TRIAGE_FALLBACK_TOTAL` only when
+> `used_fallback is True and cache_hit is False` — a live fallback, not a
+> replayed one. `used_fallback` alone (persistence, `/api/meta/providers`)
+> is completely unaffected by this change.
 
 ### Test isolation for the rate limiter
 
@@ -422,6 +472,18 @@ detail:
   assert the very next `GET /api/stats` is `X-Cache: MISS` again *and* its
   data reflects the new complaint (proves invalidation-on-write, not just
   eventual TTL expiry — the spec's explicit requirement).
+- **New, 2026-09-23 — `backend/tests/test_routes_metrics.py` (extended):**
+  proves the live-fallback-vs-cache-replay distinction from the
+  correction above. Using `SimulatedTriage(always_raise=True)` and a
+  fixed `text`+`location`: POST once, read `GET /metrics`, assert
+  `triage_fallback_total`'s delta is `+1` (a live fallback — matches
+  Phase 7b's existing test, unchanged). Then POST the exact same
+  `text`+`location` a second time (now a triage-cache hit, still
+  persisting `triaged_by == "rules:fallback"` on the row), read
+  `GET /metrics` again, and assert this second delta is `0`, not `+1` —
+  the counter must not move on a cache replay even though the replayed
+  complaint's own `triaged_by` still honestly says `rules:fallback`.
+  Cleans up both created rows.
 - **`backend/tests/test_services_complaints.py` (extended):** the three
   existing `submit_complaint()` call sites updated for the new
   `client_ip` parameter (no behavior change, confirm they still pass);

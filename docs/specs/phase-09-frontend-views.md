@@ -365,4 +365,50 @@ npm run test
 Plus a manual check against the real compose stack: `GET /api/stats` immediately after a write shows "fresh," a repeat request within the 30 s TTL shows "cached," matching `docs/specs/phase-08-cache-layer.md`'s As-Built MISS→HIT sequence.
 
 ### As-Built
-(Empty — this addendum has not been implemented; pending review.)
+
+Implemented in `a6c716d` exactly against the Plan above — no new files, no reopened Open Questions, only the four named files touched.
+
+**Automated verification (real pasted output):**
+
+```
+$ npm run build
+> civicpulse-frontend@0.1.0 build
+> tsc -b && vite build
+✓ 19 modules transformed.
+dist/index.html                  0.32 kB │ gzip:  0.23 kB
+dist/assets/index-vyTwY3O2.js  147.33 kB │ gzip: 47.78 kB
+✓ built in 78ms
+
+$ npm run typecheck
+> civicpulse-frontend@0.1.0 typecheck
+> tsc -b --noEmit
+(no output — clean)
+
+$ npm run lint
+> civicpulse-frontend@0.1.0 lint
+> eslint .
+(no output — clean)
+
+$ npm run test
+> civicpulse-frontend@0.1.0 test
+> vitest run
+
+ Test Files  4 passed (4)
+      Tests  13 passed (13)
+```
+(11 from the original Phase 9 suite + 2 new: HIT→"cached", MISS→"fresh". The pre-existing generic-aggregate test was extended, not replaced, to also assert `cacheState` never leaks into that list.)
+
+**Manual browser walkthrough** — same method as Phase 9's own As-Built (a real headless Chrome via Playwright, no interactive browser tool available in this session, disclosed rather than substituted silently), against the real `docker compose up -d --build` stack:
+
+```
+[STEP 0] Submitted a complaint (invalidates the stats cache per Phase 8).
+[STEP 1] Stats view immediately after a write: "Data: fresh"
+[STEP 2] Stats view revisited within the 30s TTL: "Data: cached"
+[STEP 3] "cacheState" leaking into the generic aggregate list: false
+```
+
+Matches the Plan's verification requirement exactly: a write forces a MISS (rendered "fresh"), the immediate revisit within the 30 s TTL is a HIT (rendered "cached"), matching `docs/specs/phase-08-cache-layer.md`'s own MISS→HIT sequence. The one scratch row (`location = 'XCache Verify Location'`) was deleted afterward; row count confirmed back at 36.
+
+**Deviations from the addendum's Plan:** none.
+
+**Three-failure-mode audit:** no silent decisions (the addendum's own text was followed exactly); no unverified claims (all output above is real); no scope beyond the four named files.

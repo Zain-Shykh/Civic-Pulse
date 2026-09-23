@@ -58,10 +58,146 @@ Replace the walking-skeleton `Placeholder` page with three real views — Submit
 *Recommendation:* draw a line between **type/label definitions** (fine) and **decision logic** (not fine). The typed API client (Deliverable d) already has to define `Category`/`Priority`/`Status` as TypeScript union types to type the complaint shape at all — that's schema knowledge mirroring `docs/CONTRACTS.md`, not an invented business rule, and the backend still independently validates every request regardless of what the dropdown offered. What must never be duplicated is *decision* logic — which specific transitions are legal from a given state — and Deliverable (b) already avoids that by never precomputing legal actions (see above). So: the enum value lists may live in `api/types.ts` as passthrough type/label definitions; the transition table may not exist anywhere in the frontend, full stop. Flag if this reading of "duplicated business rule" is too permissive.
 
 ## Plan
-(Left empty — filled in and committed separately, after these Open Questions are decided.)
+
+### Files touched/created, in dependency order
+
+1. **`frontend/package.json`** — new dependencies (exact pins, matching this repo's existing no-range style — `backend/pyproject.toml` pins exact versions, `frontend/package.json` already pins `react`/`react-dom` without `^`):
+   - `devDependencies`: `vitest` `5.0.1`, `@testing-library/react` `16.3.3`, `@testing-library/user-event` `14.6.7`, `jsdom` `30.1.1`.
+   - New scripts: `"test": "vitest run"` (single-shot, CI-friendly — not the interactive watch mode, matching `verify`-style commands used everywhere else in this project).
+   - **`jsdom` is a new dependency not named in OQ4's approval text** — Vitest doesn't bundle a DOM environment; OQ4 approved "Vitest + Testing Library" and jsdom is what makes either of those runnable outside a real browser. Flagging it explicitly here rather than silently adding a fourth package under cover of an already-approved OQ.
+   - No `@testing-library/jest-dom`. Not in the approved OQ4 list. Tests will rely on Testing Library's own throwing queries (`getByText`/`getByRole` throw if not found) and plain `expect(x).toBe(y)`/`toEqual(y)` instead of jest-dom's custom matchers (`toBeInTheDocument()` etc.). See "Still uncertain."
+
+2. **`frontend/vite.config.ts`** — one file, not a separate `vitest.config.ts`. Vitest ships `defineConfig` from `"vitest/config"` that re-exports Vite's own `defineConfig` merged with `test`-block typing, so switching the single existing import (`vite` → `vitest/config`) and adding a `test: { environment: "jsdom", globals: false }` block is the whole change — no second config file, no duplicated `plugins: [react()]`.
+   - **Environment: `jsdom`, not `happy-dom`.** Both are real options; `happy-dom` is lighter/faster but has known DOM-API gaps (form submission, some layout/CSS behavior) that `@testing-library/react`'s own test suite is written against `jsdom`, not `happy-dom`. At this project's scale (a handful of component test files), jsdom's maturity outweighs happy-dom's marginal speed edge. Standard, not exotic — jsdom is Vitest's own documented default recommendation for React component testing.
+   - **`globals: false`**, not Vitest's ambient-global mode. Every test file explicitly imports `describe`/`it`/`expect`/`vi` from `"vitest"`. Matches this project's existing preference for explicit imports over ambient magic (`tsconfig.app.json` already sets `verbatimModuleSyntax: true`, `moduleDetection: "force"` — no implicit globals anywhere else in the frontend either).
+
+3. **`frontend/tsconfig.app.json`** — add `"tests"` to the `include` array (currently `["src"]` only). Without this, `tsc -b`/`tsc -b --noEmit` never typechecks anything under `frontend/tests/`, so `npm run build` and `npm run typecheck` would stay green even if the new test files had type errors — a real gap the current tsconfig has today (it was written for the walking skeleton, which had no tests yet). No `tsconfig.node.json` change needed — `vite.config.ts`'s new `"vitest/config"` import resolves via `node_modules`' own types, not a `types:` array entry.
+
+4. **`frontend/src/api/types.ts`** — hand-typed against `docs/CONTRACTS.md` (OQ3), enum value lists per OQ6's line:
+   ```ts
+   export type Category = "water" | "electricity" | "sanitation" | "roads" | "streetlights" | "other";
+   export type Priority = "high" | "normal" | "low";
+   export type Status = "open" | "in_progress" | "resolved" | "rejected";
+
+   export interface Complaint {
+     id: string;
+     text: string;
+     location: string;
+     reporter_contact: string | null;
+     category: Category;
+     priority: Priority;
+     status: Status;
+     ai_summary: string | null;
+     triaged_by: string;
+     triage_latency_ms: number;
+     created_at: string;
+     updated_at: string;
+   }
+
+   export interface ComplaintCreateRequest {
+     text: string;
+     location: string;
+     reporter_contact?: string | null;
+   }
+
+   export interface PaginatedList<T> {
+     items: T[];
+     total: number;
+     page: number;
+     page_size: number;
+   }
+
+   export interface Stats {
+     counts_by_status: Record<string, number>;
+     average_triage_latency_ms: number;
+     [key: string]: unknown; // rendered generically (Deliverable c) — schema may grow
+   }
+
+   export interface ValidationErrorItem { loc: (string | number)[]; msg: string; type: string }
+
+   export type ApiError =
+     | { kind: "validation"; status: 400; errors: ValidationErrorItem[] }
+     | { kind: "not_found"; status: 404; message: string }
+     | { kind: "transition"; status: 409; message: string; currentStatus: Status; attemptedStatus: Status }
+     | { kind: "rate_limited"; status: 429; message: string; retryAfterSeconds: number }
+     | { kind: "unknown"; status: number; body: unknown };
+
+   export type ApiResult<T> = { ok: true; data: T } | { ok: false; error: ApiError };
+   ```
+   `ValidationErrorItem` mirrors FastAPI's own default `RequestValidationError` shape (`backend/app/exception_handlers.py`'s `validation_error_handler`: `{"detail": jsonable_encoder(exc.errors())}` — each item has `loc`/`msg`/`type`), and the 409 shape mirrors `illegal_transition_handler`'s `{"detail": {"message", "current_status", "attempted_status"}}` exactly — both read directly from the actual handler code, not guessed.
+
+5. **`frontend/src/api/client.ts`** — one `request<T>()` helper mapping `fetch`'s response into `ApiResult<T>` by status code (400/404/409/429/else), plus four thin exports: `createComplaint`, `listComplaints`, `updateStatus`, `getStats`. Every call is a relative `fetch("/api/...")` (ADR 0002 — no base URL, ever). `GET /api/complaints/{id}` and `GET /api/meta/providers` are not wrapped (Non-goals).
+
+6. **`frontend/src/hooks/useApiCall.ts`** — the OQ5 hand-rolled hook, shown once, reused by Submit/Stats and by Dashboard's list-fetch:
+   ```ts
+   type CallState<T> =
+     | { status: "idle" }
+     | { status: "loading" }
+     | { status: "success"; data: T }
+     | { status: "error"; error: ApiError };
+
+   function useApiCall<T, Args extends unknown[]>(
+     fn: (...args: Args) => Promise<ApiResult<T>>,
+   ): [CallState<T>, (...args: Args) => Promise<ApiResult<T>>] {
+     const [state, setState] = useState<CallState<T>>({ status: "idle" });
+     const run = useCallback(
+       async (...args: Args) => {
+         setState({ status: "loading" });
+         const result = await fn(...args);
+         setState(result.ok ? { status: "success", data: result.data } : { status: "error", error: result.error });
+         return result;
+       },
+       [fn],
+     );
+     return [state, run];
+   }
+   ```
+   **Dashboard's per-row status action does *not* use this hook.** `useApiCall` models exactly one in-flight call at a time; a list of rows can have several actions in flight simultaneously, each needing its own loading/error state keyed by complaint id. Dashboard instead keeps a small local `Record<string, { loading: boolean; error?: ApiError }>` keyed by id and calls `updateStatus` directly. This is a deliberate, disclosed divergence from "the hook's shape shown once, reused by all three views" as originally asked — Submit and Stats (and Dashboard's own list-fetch) do reuse it unchanged; only Dashboard's per-row action doesn't, for the structural reason above.
+
+7. **`frontend/src/pages/Submit.tsx`** — form + `useApiCall(createComplaint)`. Renders, per state: `loading` → disabled submit button; `success` → the 201 body's `category`/`priority`/`ai_summary`/`triaged_by` inline; `error` → branches only on `error.kind` (four fixed cases, not per-field/per-status content):
+   - `"validation"` → generic list, `errors.map(e => <li>{String(e.loc.at(-1))}: {e.msg}</li>)`.
+   - `"rate_limited"` → `Try again in {retryAfterSeconds}s`.
+   - anything else → the raw message, unbranched.
+
+8. **`frontend/src/pages/Dashboard.tsx`** — `useApiCall(listComplaints)` run on mount and whenever page/filters change (a plain `useEffect`, no data-fetching library per OQ5); category/priority/status filter `<select>`s populated from the OQ6-approved value lists in `api/types.ts`; per row, four always-present status-action buttons; a row's 409 renders `Cannot move from {currentStatus} to {attemptedStatus}: {message}` — one generic template, not a per-transition-pair hardcoded message.
+
+9. **`frontend/src/pages/Stats.tsx`** — `useApiCall(getStats)` run on mount; renders `Object.entries(data.counts_by_status)` and `average_triage_latency_ms` generically (Deliverable c already specifies this; restated here only to fix its place in file order).
+
+10. **`frontend/src/App.tsx`** — replaces the `Placeholder` import with the three real views and a `useState<"submit" | "dashboard" | "stats">("submit")` switcher (OQ1) plus three nav buttons.
+
+11. **Delete `frontend/src/pages/Placeholder.tsx`** — fully superseded, no caller left; not left behind as dead code.
+
+12. **`frontend/tests/api-client.test.ts`** — `request()`'s status-code branching, with `global.fetch` stubbed per test (no MSW/nock — no new mocking dependency beyond what OQ4 already approved). Covers all five `ApiError["kind"]` branches, including reading the real `Retry-After` header value into `retryAfterSeconds`.
+
+13. **`frontend/tests/Submit.test.tsx`** — renders `<Submit />`, stubs `fetch`, drives a 201 (result rendered), a 400 (generic list rendered), and a 429 (retry message rendered) through `@testing-library/user-event`.
+
+14. **`frontend/tests/Dashboard.test.tsx`** — renders `<Dashboard />`, stubs `fetch`, asserts a 409 on one row's action renders that row's message without touching any other row's status, and a 200 updates the row in place.
+
+15. **`frontend/tests/Stats.test.tsx`** — renders `<Stats />`, stubs `fetch`, asserts the rendered output reflects an arbitrary `counts_by_status` map (proving it's generic, not hardcoded to today's status set).
+
+### Still uncertain
+- No `@testing-library/jest-dom` (see file 1) — if plain-DOM assertions prove too awkward once real tests are written, adding it is a one-line `package.json`/`vite.config.ts` change; not pre-added on spec alone.
+- Dashboard's pagination control (prev/next vs. numbered pages) isn't decided — `docs/CONTRACTS.md` only requires `page`/`page_size`/`total` exist, not a specific control shape. Default to prev/next; revisit if a real need for jump-to-page shows up.
+- The manual walkthrough (below) runs against the full `docker compose` stack (nginx proxying `/api`, per ADR 0002), not Vite's own dev server (`npm run dev`) — Vite's dev server has no proxy configured today and none is being added in this phase (out of the stated Deliverables). `npm run dev` therefore stays frontend-only/no-backend for now; this matches how every prior phase's manual verification has been done (compose stack up, real browser), not a new gap introduced here.
 
 ## Verification required
-(To be finalized once the Plan is written, but at minimum, per `docs/IMPLEMENTATION-PLAN.md`'s Phase 9 "Done looks like": `npm run build`, `npm run typecheck`, `npm run lint` all green; whatever test command OQ4 lands on, green; and a manual browser walkthrough — submit a complaint and see it appear on the Dashboard, see Stats update, drive `POST /api/complaints` past the rate limit and see the Submit view's 429 handling, and trigger an illegal transition on the Dashboard and see the 409 rejection rendered.)
+
+Automated (real pasted output required in the implementation report, not a claimed pass count — same bar as every prior phase):
+```
+npm run build
+npm run typecheck
+npm run lint
+npm run test
+```
+
+Manual browser walkthrough (`docker compose up -d`, open the frontend's published port, e.g. `http://localhost:8080`):
+1. Submit a valid complaint (`text` ≥ 10 chars, `location` ≥ 3 chars). Confirm the 201 response's `category`/`priority`/`ai_summary`/`triaged_by` render inline on the Submit view itself — no second request.
+2. Switch to Dashboard. Confirm the just-submitted complaint appears in the list.
+3. Switch to Stats. Confirm `counts_by_status` reflects the new complaint (its status's count incremented by 1 vs. before step 1).
+4. Submit an intentionally invalid complaint (`text` under 10 chars). Confirm the 400 response's field-level errors render as a generic list, not a blank/generic "something went wrong."
+5. From the Submit view, submit `settings.rate_limit_max` times in quick succession, then once more. Confirm the final submission renders the 429 message using the response's actual `Retry-After` value (not a hardcoded number).
+6. On Dashboard, attempt an illegal transition (e.g. click "resolved" on a row still `open`, skipping `in_progress`). Confirm the 409 rejection renders inline next to that row (naming `current_status`/`attempted_status`) and the row's displayed status does not change.
+7. On Dashboard, perform a legal transition on the same or another row (e.g. `open` → `in_progress`). Confirm 200 and the row updates in place, and that step 6's row (still showing its 409) was unaffected by this action.
 
 ## Ambiguity handling
 Open Question 6 above is exactly this section in practice: a real ambiguity between two directly-stated constraints (need concrete filter options vs. no hand-copied enum lists) that isn't resolved by silent assumption — surfaced for a decision instead.

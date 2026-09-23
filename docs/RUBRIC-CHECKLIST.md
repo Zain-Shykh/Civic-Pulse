@@ -51,10 +51,10 @@ Team status: a specific person will probably join, but he has not started and th
 
 | Done | Item | Marks | Evidence/file |
 |---|---|---|---|
-| [ ] | /api/stats read-through cache, 30 s TTL, correct X-Cache header | 3 | |
-| [ ] | Cache invalidated on write, not left to expire | 2 | |
-| [ ] | Distributed Redis rate limiter on POST /api/complaints, 429 with Retry-After | 4 | |
-| [ ] | Redis AOF on a named volume, with your justification written down | 1 | |
+| [x] | /api/stats read-through cache, 30 s TTL, correct X-Cache header | 3 | `backend/app/providers/cache.py` (30s TTL), `backend/app/services/complaints.py::get_stats()`, `backend/app/routes/stats.py` (X-Cache header). Verified live 2026-09-23: `GET /api/stats` sequence `X-Cache: MISS` → `X-Cache: HIT` (identical data) — `docs/specs/phase-08-cache-layer.md`'s As-Built |
+| [x] | Cache invalidated on write, not left to expire | 2 | `backend/app/services/complaints.py` — `submit_complaint()`/`change_status()` both call `invalidate_stats_cache()`. Verified live: after a write, the very next `GET /api/stats` is `X-Cache: MISS` with the new complaint already counted, not stale-until-30s-expiry |
+| [x] | Distributed Redis rate limiter on POST /api/complaints, 429 with Retry-After | 4 | `backend/app/providers/cache.py::check_rate_limit()` (fixed-window INCR+EXPIRE, `docs/OPEN-DECISIONS.md` #7), `backend/app/services/exceptions.py::RateLimitExceededError`, `backend/app/exception_handlers.py`. Verified live: 10 requests (RATE_LIMIT_MAX) succeed, 11th returns 429 with a numeric `Retry-After: 60` header |
+| [ ] | Redis AOF on a named volume, with your justification written down | 1 | Mechanism already present (`compose.yaml`'s `redis` service, `--appendonly yes` on `redisdata`, since Phase 2) but the "why does a cache need a volume" justification CONTRACTS.md asks for isn't written anywhere yet — out of this phase's scope, not decided here |
 
 ## F · AI layer — 25
 

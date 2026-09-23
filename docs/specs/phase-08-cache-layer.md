@@ -1,5 +1,5 @@
 # Phase 8: Cache layer
-Status: not started
+Status: done
 Depends on: Phase 7 (routes must exist to wrap), Phase 7b (carries forward its Open Question 3)
 Reads first: docs/CONTRACTS.md §2.4 and §2.5 requirement 5, docs/OPEN-DECISIONS.md #7, docs/specs/phase-07b-metrics.md (Open Question 3), backend/app/providers/cache.py, frontend/nginx.conf
 
@@ -498,4 +498,197 @@ resolved. Everything else in `CONTRACTS.md` §2.4/§2.5 requirement 5 read
 as unambiguous given the codebase state checked.
 
 ## As-Built
-(not started)
+
+Implemented exactly against the approved Plan (`2fc23ea`, corrected
+`d1596b9`) — all five Open Questions applied as decided, the
+`cache_hit`/live-fallback correction applied as decided, the eight source
+files touched in the Plan's stated order, plus the four test files the
+Plan named (`test_services_complaints.py`, `test_routes_complaints.py`,
+`test_routes_stats.py`, `test_providers_cache.py`) and the fifth
+(`test_routes_metrics.py`) the correction's own new Verification-required
+scenario already anticipated. `pyproject.toml` has no diff from the
+approved Plan's starting point (see Deviation 1's note below on a change
+made and then reverted).
+
+### Deviation 1 — cross-event-loop Redis client crash, found and fixed
+
+Every HTTP-level test that both called `cache.*` directly (e.g. to seed or
+flush state) and made a request through `TestClient` started crashing with
+`RuntimeError: ... attached to a different loop`, or (once partially
+masked) silently produced wrong values (`assert (0.0 - 0.0) == 1`).
+
+**Root cause, confirmed by isolating the failure:** running a failing test
+alone (`pytest tests/test_routes_metrics.py::TestMetricsEndpoint::test_fallback_counter_increments_on_provider_that_always_raises`)
+produced a *different*, non-crashing failure — proving the crash was a
+cross-test artifact, not a bug in that test alone. Each `TestClient(app)`
+instance runs the ASGI app inside its own `anyio` portal **thread**, with
+its own event loop, separate from the loop pytest itself runs the test
+function's body on. `providers/cache.py`'s original design — one
+module-level `client = redis.from_url(...)`, created once — can only be
+validly used from the single loop that first opened its socket; asyncio
+transports cannot cross loops. Two things tried and rejected before
+finding the real fix, kept here for the audit trail:
+- Setting `asyncio_default_test_loop_scope = "session"` in
+  `pyproject.toml` (one shared loop for all *test bodies*) fixed
+  direct-call-only tests but not tests mixing direct calls with HTTP
+  calls, since a `TestClient`'s own portal loop is *always* a separate
+  thread regardless of pytest's own loop scope. Reverted — no diff
+  remains in `pyproject.toml`.
+- Rebuilding/discarding the client at each FastAPI lifespan
+  startup/shutdown (mirroring how `app.state.triage_provider` is
+  constructed) fixed cross-`TestClient` reuse but not a single test that
+  also calls `cache.*` directly from its own body — that call runs on a
+  *third* loop (pytest's), still mismatched against whichever portal last
+  reconnected the client. Also reverted.
+- Disabling redis-py 8.x's maintenance-notifications feature
+  (`MaintNotificationsConfig(enabled=False)`) was tried as a hypothesis
+  (its background handler looked loop-affine) and had no effect — ruled
+  out, not shipped.
+
+**Real fix, shipped:** `providers/cache.py` keeps one Redis client **per
+currently-running event loop** (a `weakref.WeakKeyDictionary` keyed by the
+loop object, resolved by a private `_client_for_current_loop()`), so a
+test's own body (pytest's loop) and each `TestClient`'s portal thread
+(its own loop) each transparently get their own connection to the same
+physical Redis server — a legitimate, ordinary multi-connection scenario,
+not a race. A module-level `__getattr__` (PEP 562) keeps `cache.client`
+working as a plain attribute for every existing call site (both
+`providers/cache.py`'s own functions and every test file that references
+it directly) without changing any of them. Production is unaffected: one
+process has exactly one event loop for its whole life, so this is
+functionally the same single persistent client as before.
+
+### Deviation 2 — two pre-existing Phase 7b tests broke against a clean cache
+
+Once Deviation 1's fix removed the crash, two **pre-existing** tests still
+failed on a real assertion:
+`test_routes_complaints.py::TestMandatoryDeterminism::test_provider_that_always_raises_still_returns_201`
+and
+`test_routes_metrics.py::TestMetricsEndpoint::test_fallback_counter_increments_on_provider_that_always_raises`.
+
+**Root cause:** both reused generic filler text (`_create_payload()`'s
+default, and `"A" * 20 + "Test Location"` respectively) that an *earlier*
+test in the same run had already submitted successfully (non-fallback).
+Phase 8's triage-result cache — working exactly as designed — checks the
+cache *before* ever calling the provider, so the always-raising override
+in these two tests was never actually exercised; the cached, earlier
+non-fallback result was replayed instead. This is not a caching bug: two
+identical `(text, location)` pairs are contractually supposed to produce
+one shared result (`CONTRACTS.md` §2.5 requirement 5). It's a hidden
+assumption in two pre-existing tests — "every POST re-triages fresh" —
+that Phase 8 legitimately breaks. Fixed by giving each test its own
+unique text, the same discipline this phase's own new tests already
+followed. No assertion, intent, or scenario in either test changed.
+
+### Deviation 3 — new file beyond the Plan's list: `backend/tests/conftest.py`
+
+A session-scoped, autouse fixture that flushes the whole test Redis
+database once before any test runs. Necessitated by the same class of
+issue as Deviation 2, one level up: Redis data physically persists across
+*separate* `pytest` invocations (confirmed directly — a stale
+`triage:<hash>` key from an earlier debugging run was still present with
+a live TTL when checked), unlike Postgres's idempotent seed script. Fixing
+only the two tests' payloads (Deviation 2) would not have protected
+against a *previous run's* leftover cache entries contaminating the next
+one. Test-only, 20 lines, no production code path touches it — disclosed
+here explicitly since it is a real file the Plan's list did not name.
+
+### Verification — real output, pasted in full
+
+`ruff check .`:
+```
+All checks passed!
+```
+
+`mypy app`:
+```
+Success: no issues found in 31 source files
+```
+
+Full suite, run twice for determinism (no `time.sleep()`, no flaky
+ordering):
+```
+======================= 164 passed, 2 warnings in 1.99s ========================
+======================= 164 passed, 2 warnings in 2.07s ========================
+```
+
+Targeted run of every new/extended test this phase added:
+```
+tests/test_routes_complaints.py::TestRateLimiting::test_exceeding_the_window_returns_429_with_retry_after PASSED
+tests/test_routes_stats.py::TestStatsCache::test_miss_then_hit_then_invalidated_on_write PASSED
+tests/test_services_complaints.py::TestTriageResultCache::test_second_identical_complaint_does_not_reinvoke_provider PASSED
+tests/test_routes_metrics.py::TestLiveFallbackVsCacheReplay::test_cache_replay_of_a_fallback_does_not_double_count PASSED
+tests/test_providers_cache.py::TestStatsCache::test_get_set_delete_round_trip_and_ttl PASSED
+tests/test_providers_cache.py::TestRateLimiter::test_allows_up_to_max_then_blocks_with_positive_retry_after PASSED
+tests/test_providers_cache.py::TestTriageResultCache::test_get_set_round_trip_and_ttl PASSED
+tests/test_providers_cache.py::TestTriageResultCache::test_hit_rate_reflects_this_test_s_own_delta PASSED
+tests/test_providers_cache.py::TestTriageResultCache::test_hit_rate_is_none_when_no_lookups_recorded PASSED
+======================== 9 passed, 2 warnings in 0.81s =========================
+```
+
+Manual, real-value verification against the live app (`TestClient`, real
+Postgres + Redis, `RATE_LIMIT_MAX=10`) — every number below is pasted from
+an actual run, not asserted:
+
+Rate limiter — 10 allowed, 11th blocked:
+```
+request 1: status=201
+request 2: status=201
+...
+request 10: status=201
+request 11 (over limit): status=429 Retry-After=60
+```
+
+Stats cache — MISS, then HIT (identical data), then MISS again with the
+new complaint counted (proves invalidation-on-write, not TTL expiry):
+```
+1st GET /api/stats: X-Cache=MISS open_count=36
+2nd GET /api/stats: X-Cache=HIT  open_count=36
+3rd GET /api/stats (after write): X-Cache=MISS open_count=37
+```
+
+Triage-result cache — a call-counting wrapper around the provider, two
+identical submissions:
+```
+provider.triage() call count after 2 identical submissions: 1
+first:  cache_hit=False triaged_by=simulated
+second: cache_hit=True  triaged_by=simulated
+```
+
+Live fallback vs. cache replay — the Plan's correction, proven with real
+deltas:
+```
+before: 0.0
+after live fallback (delta=1.0): 1.0   [triaged_by=rules:fallback cache_hit=False]
+after cache-replay (delta=0.0): 1.0    [triaged_by=rules:fallback cache_hit=True]
+```
+
+A one-off cleanup bug in my own ad-hoc verification script (not part of
+the committed codebase — it passed raw string complaint IDs to a DELETE
+instead of `uuid.UUID(...)`, unlike every real test file's convention) left
+11 rows in the dev database; found via `test_repositories.py` failing
+against the wrong row/category counts, fixed with a manual `DELETE ...
+WHERE location IN (...)` targeting only the synthetic verification rows,
+confirmed by two subsequent clean full-suite runs (164 passed each) and a
+direct row count back to 36 (the seeded baseline).
+
+### Three-failure-mode audit (`docs/WORKFLOW.md`)
+
+- **Silent decisions:** none beyond what the five Open Questions and the
+  `cache_hit` correction already settled. Deviation 1's per-loop client
+  design is a test-only implementation detail forced by making the
+  already-approved design actually run correctly — it changes no approved
+  decision (rate-limit algorithm, TTLs, key composition, the four-layer
+  boundary — Redis import still confined to `providers/cache.py`).
+  Deviation 2's payload changes alter no test's assertion or intent, only
+  input data that was accidentally colliding.
+- **Unverified claims:** none — every Verification-required item above is
+  real, pasted output from an actual run, not a summary or an assertion.
+- **Undisclosed scope creep:** one real instance, disclosed as Deviation 3
+  — `backend/tests/conftest.py`, a file the Plan did not name. No other
+  file outside the Plan's list was touched; confirmed via `git diff
+  --stat` against the Plan's exact file list before committing.
+
+No new item needed adding to `docs/OPEN-DECISIONS.md` this phase — unlike
+Phase 7b's OQ4, everything found during implementation here was resolved
+in-phase, not left open.

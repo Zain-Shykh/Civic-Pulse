@@ -13,10 +13,12 @@ import time
 import uuid
 from typing import Any
 
+from app.config import settings
+from app.providers import cache
 from app.providers.triage.base import TriageProvider, TriageResult
 from app.providers.triage.rules import RuleBasedTriage
 from app.repositories import complaints as repository
-from app.services.exceptions import IllegalTransitionError, NotFoundError
+from app.services.exceptions import IllegalTransitionError, NotFoundError, RateLimitExceededError
 
 logger = logging.getLogger(__name__)
 
@@ -44,25 +46,52 @@ async def change_status(complaint_id: uuid.UUID, new_status: str) -> dict[str, A
     # complaint present at the get_by_id check above cannot be deleted before
     # update_status() runs — this is a provable invariant, not a hedge.
     assert updated is not None
+    await cache.invalidate_stats_cache()  # status counts are part of stats_summary()
     return updated
 
 
 async def submit_complaint(
-    provider: TriageProvider, *, text: str, location: str, reporter_contact: str | None
+    provider: TriageProvider,
+    *,
+    text: str,
+    location: str,
+    reporter_contact: str | None,
+    client_ip: str,
 ) -> dict[str, Any]:
+    allowed, retry_after_seconds = await cache.check_rate_limit(
+        client_ip,
+        max_requests=settings.rate_limit_max,
+        window_seconds=settings.rate_limit_window_seconds,
+    )
+    if not allowed:
+        raise RateLimitExceededError(retry_after_seconds)
+
     start = time.monotonic()
-    try:
-        result = await provider.triage(text, location)
-    except Exception:
-        logger.warning("triage_provider_raised_falling_back", extra={"provider": provider.name})
-        fallback = await RuleBasedTriage().triage(text, location)
-        result = TriageResult(
-            category=fallback.category,
-            priority=fallback.priority,
-            summary=fallback.summary,
-            confidence=fallback.confidence,
-            triaged_by="rules:fallback",
-        )
+    cached_result = await cache.get_triage_cache(text, location)
+    cache_hit = cached_result is not None
+    if cached_result is not None:
+        result = TriageResult.model_validate(cached_result)
+        await cache.record_triage_cache_hit()
+    else:
+        await cache.record_triage_cache_miss()
+        try:
+            result = await provider.triage(text, location)
+        except Exception:
+            logger.warning(
+                "triage_provider_raised_falling_back", extra={"provider": provider.name}
+            )
+            fallback = await RuleBasedTriage().triage(text, location)
+            result = TriageResult(
+                category=fallback.category,
+                priority=fallback.priority,
+                summary=fallback.summary,
+                confidence=fallback.confidence,
+                triaged_by="rules:fallback",
+            )
+        await cache.set_triage_cache(text, location, result.model_dump(mode="json"))
+    # Cache-hit or not, this measures this request's own elapsed time around
+    # the triage step (cache lookup vs. provider call) — docs/specs/
+    # phase-08-cache-layer.md's Plan, "On a cache hit."
     triage_latency_ms = int((time.monotonic() - start) * 1000)
 
     created = await repository.create(
@@ -75,11 +104,22 @@ async def submit_complaint(
         triaged_by=result.triaged_by,
         triage_latency_ms=triage_latency_ms,
     )
-    return {**created, "used_fallback": result.triaged_by == "rules:fallback"}
+    await cache.invalidate_stats_cache()  # category counts + avg latency changed
+    return {
+        **created,
+        "used_fallback": result.triaged_by == "rules:fallback",
+        "cache_hit": cache_hit,
+    }
 
 
-async def get_stats() -> dict[str, Any]:
-    return await repository.stats_summary()
+async def get_stats() -> tuple[dict[str, Any], bool]:
+    """Returns (data, hit) — routes/stats.py turns `hit` into X-Cache."""
+    cached = await cache.get_stats_cache()
+    if cached is not None:
+        return cached, True
+    data = await repository.stats_summary()
+    await cache.set_stats_cache(data)
+    return data, False
 
 
 async def get_complaint(complaint_id: uuid.UUID) -> dict[str, Any]:
@@ -114,4 +154,5 @@ async def get_meta_providers(provider: TriageProvider) -> dict[str, Any]:
             }
             for row in outcomes
         ],
+        "triage_cache_hit_rate": await cache.triage_cache_hit_rate(),
     }

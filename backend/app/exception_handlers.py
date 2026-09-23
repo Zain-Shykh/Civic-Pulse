@@ -11,7 +11,11 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.services.exceptions import IllegalTransitionError, NotFoundError
+from app.services.exceptions import (
+    IllegalTransitionError,
+    NotFoundError,
+    RateLimitExceededError,
+)
 
 
 async def not_found_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -30,6 +34,15 @@ async def illegal_transition_handler(request: Request, exc: Exception) -> JSONRe
                 "attempted_status": exc.attempted_status,
             }
         },
+    )
+
+
+async def rate_limit_exceeded_handler(request: Request, exc: Exception) -> JSONResponse:
+    assert isinstance(exc, RateLimitExceededError)  # Starlette dispatches by registered type
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content={"detail": str(exc)},
+        headers={"Retry-After": str(exc.retry_after_seconds)},
     )
 
 

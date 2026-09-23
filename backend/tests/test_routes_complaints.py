@@ -15,13 +15,29 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
+from app.config import settings
 from app.db import engine
 from app.main import app
+from app.providers import cache
 from app.providers.triage.simulated import SimulatedTriage
 from app.repositories import complaints as repository
 from app.routes.dependencies import get_triage_provider
 
+
+async def _flush_rate_limit(client_ip: str) -> None:
+    keys = [key async for key in cache.client.scan_iter(f"ratelimit:{client_ip}:*")]
+    if keys:
+        await cache.client.delete(*keys)
+
 _DELETE = text("DELETE FROM complaints WHERE id = :id")
+
+# Every test in this file shares this TestClient's default
+# request.client.host ("testclient") unless overridden — since Phase 8 wires
+# a real per-IP rate limiter behind POST /api/complaints, every HTTP-level
+# test file needs its own fixed, distinct X-Real-IP so it doesn't share a
+# rate-limit bucket with any other file (docs/specs/phase-08-cache-layer.md's
+# Plan, "Test isolation for the rate limiter").
+_FILE_CLIENT_IP = "10.0.0.11"
 
 
 async def _delete(complaint_id: uuid.UUID) -> None:
@@ -31,7 +47,7 @@ async def _delete(complaint_id: uuid.UUID) -> None:
 
 @pytest.fixture
 def client() -> Iterator[TestClient]:
-    with TestClient(app) as c:
+    with TestClient(app, headers={"X-Real-IP": _FILE_CLIENT_IP}) as c:
         yield c
     app.dependency_overrides.clear()
 
@@ -181,7 +197,18 @@ class TestMandatoryDeterminism:
             always_raise=True
         )
         try:
-            response = client.post("/api/complaints", json=_create_payload())
+            # Deliberately NOT _create_payload()'s shared default text: Phase
+            # 8's triage-result cache (docs/specs/phase-08-cache-layer.md)
+            # means an earlier test's successful (non-fallback) submission of
+            # that exact text+location would be replayed here as a cache hit,
+            # never actually exercising this provider override.
+            response = client.post(
+                "/api/complaints",
+                json=_create_payload(
+                    text_body="This complaint's provider is broken on purpose, "
+                    "mandatory determinism check over HTTP."
+                ),
+            )
             assert response.status_code == 201
             body = response.json()
             try:
@@ -190,3 +217,32 @@ class TestMandatoryDeterminism:
                 await _delete(uuid.UUID(body["id"]))
         finally:
             app.dependency_overrides.clear()
+
+
+class TestRateLimiting:
+    """docs/specs/phase-08-cache-layer.md, Deliverable (b). Uses its own
+    dedicated IP (10.0.0.12), distinct from _FILE_CLIENT_IP (10.0.0.11) that
+    every other test in this file shares — driving this bucket over its
+    limit must not affect any other test."""
+
+    _IP = "10.0.0.12"
+
+    async def test_exceeding_the_window_returns_429_with_retry_after(self) -> None:
+        await _flush_rate_limit(self._IP)
+        created_ids: list[uuid.UUID] = []
+        try:
+            with TestClient(app, headers={"X-Real-IP": self._IP}) as c:
+                for _ in range(settings.rate_limit_max):
+                    response = c.post("/api/complaints", json=_create_payload())
+                    assert response.status_code == 201
+                    created_ids.append(uuid.UUID(response.json()["id"]))
+
+                over_limit = c.post("/api/complaints", json=_create_payload())
+                assert over_limit.status_code == 429
+                retry_after = over_limit.headers.get("retry-after")
+                assert retry_after is not None
+                assert int(retry_after) > 0
+        finally:
+            for complaint_id in created_ids:
+                await _delete(complaint_id)
+            await _flush_rate_limit(self._IP)

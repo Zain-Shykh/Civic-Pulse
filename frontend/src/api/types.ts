@@ -42,6 +42,15 @@ export interface Stats {
   [key: string]: unknown;
 }
 
+// docs/specs/phase-09-frontend-views.md's Addendum. HIT/MISS mirrors
+// GET /api/stats's X-Cache header (docs/specs/phase-08-cache-layer.md);
+// null covers a missing/unexpected header value defensively.
+export type CacheState = "HIT" | "MISS" | null;
+
+export interface StatsWithCacheState extends Stats {
+  cacheState: CacheState;
+}
+
 // Mirrors backend/app/exception_handlers.py's validation_error_handler:
 // {"detail": jsonable_encoder(exc.errors())} — FastAPI's default
 // RequestValidationError item shape.

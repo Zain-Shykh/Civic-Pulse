@@ -12,10 +12,19 @@ import type {
   PaginatedList,
   Priority,
   Stats,
+  StatsWithCacheState,
   Status,
+  CacheState,
 } from "./types";
 
-async function request<T>(path: string, init?: RequestInit): Promise<ApiResult<T>> {
+async function request<T>(
+  path: string,
+  init?: RequestInit,
+  // Addendum (docs/specs/phase-09-frontend-views.md): only getStats() passes
+  // this, to fold a response header into its data. Every other call site
+  // omits it and gets today's unchanged (await response.json()) as T.
+  parseSuccess?: (response: Response) => Promise<T>,
+): Promise<ApiResult<T>> {
   let response: Response;
   try {
     response = await fetch(`/api${path}`, {
@@ -35,7 +44,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<ApiResult<T
   }
 
   if (response.ok) {
-    return { ok: true, data: (await response.json()) as T };
+    const data = parseSuccess ? await parseSuccess(response) : ((await response.json()) as T);
+    return { ok: true, data };
   }
 
   const body = await response.json().catch(() => undefined);
@@ -96,7 +106,13 @@ export const updateStatus = (id: string, status: Status) =>
     body: JSON.stringify({ status }),
   });
 
-export const getStats = () => request<Stats>("/stats");
+export const getStats = () =>
+  request<StatsWithCacheState>("/stats", undefined, async (response) => {
+    const body = (await response.json()) as Stats;
+    const header = response.headers.get("X-Cache");
+    const cacheState: CacheState = header === "HIT" || header === "MISS" ? header : null;
+    return { ...body, cacheState };
+  });
 
 // One generic, per-kind description reused by every view instead of each
 // duplicating this switch (Deliverable a/b/c all need to render an ApiError

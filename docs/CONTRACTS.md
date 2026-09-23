@@ -18,7 +18,7 @@ These are the pieces of the assignment that are *tested*, not merely described. 
 | GET | /ready | Readiness. 200 only if Postgres and Redis are both reachable; 503 naming the failed dependency. |
 | GET | /metrics | Prometheus text format: request count, request latency histogram, triage latency, fallback counter. |
 
-> Note: the rubric (§4, Category C) refers to "all ten endpoints to contract" but this table as written lists nine. Flagged in `docs/OPEN-DECISIONS.md` / ambiguity list — do not silently invent a tenth endpoint to make the count match.
+> Note: the rubric (§4, Category C) refers to "all ten endpoints to contract"; this table lists nine. Confirmed: the rubric's "ten" is a typo — nine is the authoritative count. Do not invent a tenth endpoint.
 
 Also from §2.2:
 
@@ -52,7 +52,7 @@ Terminal states: `resolved`, `rejected`. Any transition not in the list above �
 | priority | enum: high · normal · low |
 | status | enum: open · in_progress · resolved · rejected, default open |
 | ai_summary | nullable — one line, ≤ 140 chars |
-| triaged_by | llm:groq · llm:ollama · rules · rules:fallback |
+| triaged_by | llm:groq · llm:ollama · rules · rules:fallback (pattern, not a fixed enum — see note below) |
 | triage_latency_ms | integer — you cannot reason about cost or latency without measuring it |
 | created_at / updated_at | timestamptz, UTC |
 
@@ -66,6 +66,8 @@ Additional requirements from §2.3:
 
 > Schema managed by Alembic migrations — no CREATE TABLE in application startup code, ever.
 
+**Resolved reading of `triaged_by`'s listed values:** `llm:groq · llm:ollama · rules · rules:fallback` is a naming *pattern* — `llm:<provider>` — illustrated using Groq as the example hosted provider, not a fixed, closed enum. Since the actual chosen provider is Gemini (`docs/OPEN-DECISIONS.md` #1), `LLMTriage` records `triaged_by = "llm:gemini"`, following the same pattern with the actual provider name substituted. This is a deliberate, logged deviation from the spec's literal example value — see `docs/architecture/DEVIATIONS.md` and `docs/adr/0001-provider-interface.md`.
+
 ---
 
 ## AI layer — TriageProvider interface / TriageResult schema (§2.5)
@@ -76,10 +78,11 @@ class TriageResult(BaseModel):
     priority: Priority
     summary: str = Field(max_length=140)
     confidence: float = Field(ge=0.0, le=1.0)
+    triaged_by: str
 
 class TriageProvider(Protocol):
     name: str
-    def triage(self, text: str, location: str) -> TriageResult: ...
+    async def triage(self, text: str, location: str) -> TriageResult: ...
 ```
 
 Four implementations, selected by `TRIAGE_PROVIDER`:

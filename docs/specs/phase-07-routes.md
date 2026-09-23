@@ -1,0 +1,149 @@
+# Phase 07: Routes
+Status: done
+Depends on: Phase 6 (services/complaints.py — change_status, submit_complaint, get_stats)
+Reads first: docs/CONTRACTS.md §2.2 (API contract, status state machine), §2.3 (schema — text/location bounds, triaged_by pattern), §2.4 (Redis — explicitly deferred, see Non-goals), §2.5 (TriageProvider/TriageResult, mandatory Determinism test), docs/adr/0001-provider-interface.md, docs/adr/0005-ready-endpoint-layering-exception.md, backend/app/services/complaints.py, backend/app/services/exceptions.py, backend/app/repositories/complaints.py, backend/app/routes/health.py
+
+## Goal
+Wire the seven remaining API-contract endpoints (`/health` and `/ready` already exist, Phase 2) as thin HTTP adapters over the Phase 6 service layer: parse and validate the request, call the one matching `services/complaints.py` function, map its return value or raised exception to the contracted status code and body. No business rule gets reimplemented here — CLAUDE.md's four-layer rule means a route that queries the DB directly is a design failure, not a shortcut, and ADR 0005's layering exception is scoped to `/health`/`/ready` only.
+
+## Deliverables
+
+Every remaining row of CONTRACTS.md's nine-endpoint table (§2.2):
+
+- **`POST /api/complaints`** — "Validate → triage → persist. 201. 400 with a field-level error body. 429 when the caller exceeds the rate limit." Calls `services.complaints.submit_complaint(provider, text=, location=, reporter_contact=)`. Request body validated by a new Pydantic model (`text`: 10–2000 chars, `location`: 3–200 chars, `reporter_contact`: optional) — bounds copied verbatim from CONTRACTS.md §2.3's schema table, not invented here. 429/rate-limiting is **not** built this phase — see Non-goals.
+- **`GET /api/complaints/{id}`** — "200 / 404." Calls `services.complaints` — but note: Phase 6 only built `change_status`, `submit_complaint`, `get_stats`; a plain get-by-id passthrough (`repository.get_by_id` wrapped in a thin service function, mirroring `get_stats()`'s passthrough pattern) is a new but trivial service addition. 404 on missing ID — this repo call already returns `None` on miss (`repositories/complaints.py:80-84`), no exception needed here (unlike `change_status`, which is why it raises `NotFoundError` — nothing to fall back to on a plain read miss).
+- **`GET /api/complaints`** — "Filter by category, priority, status; paginate (page, page_size ≤ 100); return total." `repositories/complaints.py::list_complaints()` (lines 87-123) already implements exactly this, including the `(rows, total)` return shape and the note that capping `page_size` at 100 is "a route-layer validation concern" — confirming this phase, not a later one, is where that cap gets enforced (Pydantic query-param validation, `le=100`). A thin service wrapper is needed (no such wrapper exists yet) to keep the route from calling the repository directly.
+- **`PATCH /api/complaints/{id}/status`** — "Enforce the state machine. Invalid transition → 409 naming the attempted transition." Calls `services.complaints.change_status(complaint_id, new_status)` directly — this function already exists in full (`backend/app/services/complaints.py:33-47`), transition table and all. Request body: a new Pydantic model with one field, `status`. Exception mapping: `NotFoundError` → 404, `IllegalTransitionError` → 409. Both exceptions already carry exactly the fields the response body needs (checked directly, not from memory): `NotFoundError.complaint_id` (`services/exceptions.py:18-21`), `IllegalTransitionError.current_status` / `.attempted_status` (`services/exceptions.py:11-15`) — "naming the attempted transition" is satisfied by putting `current_status` and `attempted_status` in the 409 body, not just a string message.
+- **`GET /api/stats`** — "Aggregates, Redis-cached, TTL 30 s, `X-Cache: HIT|MISS`." Calls `services.complaints.get_stats()` (already built, Phase 6). **This phase delivers the aggregates only — no Redis, no `X-Cache` header.** That half of this contract row is explicitly Phase 8's (see Non-goals). This is a real, temporary gap against CONTRACTS.md's literal wording for this endpoint, disclosed here rather than silently shipped.
+- **`GET /api/meta/providers`** — "Which triage provider is active, and the last 20 triage outcomes (provider, latency ms, fallback y/n). This is your observability surface." Two things this endpoint needs, neither of which exists yet:
+  - *Active provider*: `get_triage_provider().name` (`providers/triage/factory.py:43-44`), not the raw `TRIAGE_PROVIDER` env var — checked directly, and they're **not** always the same string: `RuleBasedTriage.name = "rules"` and `SimulatedTriage.name = "simulated"` match their env-var keys, but `LLMTriage.name = "llm:gemini"` (`providers/triage/llm.py:73`) does not match the env var key `"llm"`. `.name` is the correct source per `TriageProvider`'s own protocol (`name: str`, `base.py:36-37`) and matches the `triaged_by` naming pattern CONTRACTS.md documents (§2.3's "Resolved reading" note) — the env var is a selector, `.name` is the identity.
+  - *Last 20 triage outcomes*: no repository function returns this. New Deliverable: `repositories/complaints.py::recent_triage_outcomes(limit=20)` — `SELECT triaged_by, triage_latency_ms, created_at FROM complaints ORDER BY created_at DESC LIMIT :limit`, reusing the table CivicPulse already writes every triage outcome to (per `submit_complaint()`'s `repository.create()` call) rather than adding a separate in-memory tracker that would reset on restart and not work once there's more than one pod. "Fallback y/n" is derived, not stored: `triaged_by == "rules:fallback"`, per the exact string `submit_complaint()`'s fallback branch writes (`services/complaints.py:64`) and per CONTRACTS.md's own `triaged_by` pattern note. New thin service wrapper needed (no exception, per CLAUDE.md's four-layer rule — a route cannot call `repositories/complaints.py` directly, and this endpoint isn't in ADR 0005's two-route exception list).
+- **Exception-to-HTTP-status mapping**, needed by two of the above: `NotFoundError` → 404, `IllegalTransitionError` → 409 with `current_status`/`attempted_status` in the body. New file: `backend/app/exception_handlers.py` (or handlers registered directly in `main.py` — see Open Question 3 on global-handler vs per-route).
+- **Request validation → 400, not FastAPI's default 422.** FastAPI's built-in behaviour for a failing Pydantic request-body model is `422 Unprocessable Entity` via `RequestValidationError` — not the `400` CONTRACTS.md's `POST /api/complaints` row explicitly specifies. This needs an explicit override (a `RequestValidationError` handler returning 400), or the contract is silently missed. Flagging this here as a required Deliverable, not an Open Question, since CONTRACTS.md's wording ("400 with a field-level error body") is unambiguous about the status code — only the exact body shape is open (Open Question 1).
+- New file: `backend/app/schemas/complaints.py` — Pydantic request models (`ComplaintCreateRequest`, `StatusUpdateRequest`) with the field bounds above.
+- New file(s): `backend/app/routes/complaints.py` (the four `/api/complaints...` routes), `backend/app/routes/meta.py` (`/api/meta/providers`), `backend/app/routes/stats.py` (`/api/stats`) — or one combined `routes/complaints.py` if the Plan judges the split not worth three files; deferred to Plan.
+- Edited: `backend/app/main.py` — register the new routers and exception handlers.
+- New file: `backend/tests/test_routes_complaints.py` — HTTP-level tests (see Verification required).
+
+## Non-goals
+- No Redis: no `X-Cache` header on `GET /api/stats`, no 30 s cache TTL, no invalidation-on-write. Phase 8.
+- No rate limiting: `POST /api/complaints`'s 429/`Retry-After` is Redis-backed per CONTRACTS.md §2.4 ("must be distributed, in Redis, not an in-process dictionary") — no Redis rate-limiter exists yet, so this phase cannot build it without violating that requirement itself. Phase 8, alongside the stats cache.
+- No triage-result content-hash cache (24 h TTL) — same reason, same phase, already a Non-goal since Phase 5b.
+- No frontend.
+- No changes to `/health` or `/ready` (Phase 2, ADR 0005) beyond registering existing routers unchanged.
+- No OllamaTriage wiring (still an open question from Phase 5b, untouched here).
+
+## Open Questions
+1. **Error response body shape.** CONTRACTS.md specifies status codes and, for 409, that the body must name "the attempted transition" — but no exact JSON key names for any error case (400, 404, 409, or the future 429). No existing precedent in the codebase (`health.py`'s only non-200 response, 503, uses `{"status": "not_ready", "failed_dependencies": [...]}`, a bespoke shape, not FastAPI's `{"detail": ...}` default). Proposal for Plan: use FastAPI's own `{"detail": ...}` convention throughout (`detail` as a string for 404, a dict with `current_status`/`attempted_status` keys for 409, FastAPI's native field-error list shape for 400/422-turned-400) rather than inventing a new envelope — but this is a real decision, not implied by any cited source, and needs approval before Plan.
+2. **`GET /api/complaints` and `GET /api/meta/providers` response body shapes.** Same gap as above but for success cases: CONTRACTS.md says "paginate... return total" and "last 20 triage outcomes (provider, latency ms, fallback y/n)" but not exact JSON key names. Proposal for Plan: `{"items": [...], "total": N, "page": N, "page_size": N}` for the list endpoint, `{"active_provider": "...", "recent_outcomes": [{"provider": ..., "latency_ms": ..., "fallback": bool}, ...]}` for meta/providers — flagged for approval, not decided here.
+3. **Exception handler registration mechanism.** No precedent exists in this codebase (`health.py`'s 503 is built inline via `Response`, not an exception handler, because it never raises). FastAPI supports global handlers (`@app.exception_handler(...)` in `main.py`, one per exception type, run for any route) or per-route `try/except`. A global handler keeps `routes/complaints.py`'s bodies free of repeated exception-mapping code and matches CLAUDE.md's "routes: HTTP only... no business rules" more cleanly than duplicating `try/except IllegalTransitionError` in every route that can raise it — recommended, but stated as a recommendation needing sign-off, not an inferred default.
+4. **Provider lifecycle — construction frequency.** Phase 6's spec deferred this exact question here ("the real answer to Phase 7"), citing ADR 0001's "obtained once from the factory (e.g. via FastAPI dependency injection)" as ambiguous on frequency. This phase is where it can no longer be deferred: a route-layer `Depends()` either (a) calls `get_triage_provider()` fresh on every request (cheap for `rules`/`simulated`, but constructs a new SDK-backed object on every request for `llm`), or (b) constructs one provider once at app startup (e.g. stored on `app.state`) and injects the same instance every request. ADR 0001's wording doesn't pin which. Recommendation for Plan: construct once at startup, store on `app.state`, inject via a `Depends()` that reads it back — but this needs explicit approval, it is not a mechanical detail.
+5. **Text/location validation boundary — confirmed, not left open.** CONTRACTS.md §2.3 states these bounds explicitly ("text: 10–2000 chars... enforced in the DB as well as the app"; "location: 3–200 chars") — Pydantic `min_length`/`max_length` on the request model enforces this before the DB is ever touched, failing with the same 400 path as any other validation error (Open Question 1's body-shape question applies here too, but the boundary values themselves and the requirement to enforce them app-side are not open).
+6. **`GET /metrics` — phase ownership.** Neither `docs/CONTRACTS.md` nor `docs/IMPLEMENTATION-PLAN.md` cleanly assigns this endpoint anywhere: IMPLEMENTATION-PLAN.md's Phase 7 bullet ("All remaining endpoints from `docs/CONTRACTS.md` wired to services") is worded broadly enough to sound like it includes it, but `/metrics` is Prometheus request-count/latency-histogram instrumentation — cross-cutting ASGI middleware, not a call into `services/complaints.py` the way every other endpoint in this spec is. Genuinely not this phase's shape of work. Resolved (see IMPLEMENTATION-PLAN.md): given its own slot, Phase 7b, rather than folded silently into 7 or 8.
+
+## Plan
+
+**Files touched, in order:**
+
+1. `backend/app/schemas/complaints.py` (new) — `ComplaintCreateRequest` (`text`: 10–2000 chars, `location`: 3–200 chars, `reporter_contact`: optional), `StatusUpdateRequest` (`status: str`). Bounds copied verbatim from CONTRACTS.md §2.3.
+2. `backend/app/exception_handlers.py` (new) — three handlers: `NotFoundError` → 404 `{"detail": f"complaint {complaint_id} not found"}`; `IllegalTransitionError` → 409 `{"detail": {"current_status": ..., "attempted_status": ..., "message": "..."}}`; `RequestValidationError` → 400 (overriding FastAPI's default 422) `{"detail": exc.errors()}`, reusing FastAPI's own error list rather than inventing a new shape.
+3. `backend/app/repositories/complaints.py` (edit) — add `recent_triage_outcomes(limit=20)`, one `SELECT triaged_by, triage_latency_ms, created_at ... ORDER BY created_at DESC LIMIT :limit`.
+4. `backend/app/services/complaints.py` (edit) — add three thin wrappers:
+   - `get_complaint(id)` — calls `repository.get_by_id`; if `None`, **raises `NotFoundError(id)`** (not a plain passthrough returning `None`). This matches `change_status()`'s existing pattern exactly, so every "not found" case anywhere in the service layer goes through the same exception, and the route layer has exactly one path for 404 (the global `NotFoundError` handler) instead of two (an exception for `change_status`, a manual `None`-check for a plain read).
+   - `list_complaints(...)` — passthrough to `repository.list_complaints`.
+   - `get_meta_providers(provider)` — returns `{"active_provider": provider.name, "recent_outcomes": [...]}`, deriving `fallback` as `triaged_by == "rules:fallback"`.
+5. `backend/app/routes/complaints.py` (new) — `POST /api/complaints`, `GET /api/complaints/{id}`, `GET /api/complaints`, `PATCH /api/complaints/{id}/status`. `GET /api/complaints/{id}` is now a direct call to `services.complaints.get_complaint(id)` with no route-level `None`-check — a miss raises `NotFoundError`, caught by the global handler from item 2. Every 404 in this file is produced the same way.
+6. `backend/app/routes/meta.py` (new) — `GET /api/meta/providers`.
+7. `backend/app/routes/stats.py` (new) — `GET /api/stats` (aggregates only, no `X-Cache`, per Non-goals).
+8. `backend/app/main.py` (edit) — FastAPI `lifespan` constructs one `TriageProvider` via `get_triage_provider()` at startup, stores it on `app.state.triage_provider`; a `Depends()` reads it back for injection into routes. Register the three new routers and the three exception handlers.
+9. `backend/tests/test_routes_complaints.py` (new).
+
+**Key technical choices:**
+
+- **Provider lifecycle (Open Question 4):** construct once at startup on `app.state`. `LLMTriage.__init__` (`providers/triage/llm.py:75-79`) sets only `self._client` and `self._fallback`, both fixed at construction; `.triage()` (lines 82-125) never assigns to `self.` anything — confirmed directly, no mutable state to race across concurrent requests sharing one instance.
+- **Exception handlers (Open Question 3):** global, registered once in `main.py`, not per-route `try/except`.
+- **Error/response body shapes (Open Questions 1/2):** FastAPI's own `{"detail": ...}` convention throughout; list/meta success shapes as pasted to you separately.
+- **Single not-found path:** `NotFoundError` is now the only mechanism by which any route in this phase produces a 404 — no route contains its own `if ... is None` check.
+- **`/metrics`:** excluded from this file list — given its own phase, 7b, in IMPLEMENTATION-PLAN.md.
+
+All four Open Questions this Plan touches (1, 2, 3, 4) remain proposals awaiting approval, not decisions — same status as before this edit, only Deliverable #4/route #5 changed in substance.
+
+## Verification required
+- `docker compose up -d postgres redis` (routes touch `/ready`, which pings both — Redis must be up even though this phase adds no Redis *usage* of its own beyond that existing check).
+- `alembic upgrade head`, run the seed script.
+- Real HTTP-level tests in `backend/tests/test_routes_complaints.py`, using FastAPI's `TestClient` or `httpx.AsyncClient(app=app, base_url=...)` against the actual `app` object from `app.main` — not calling `services.complaints` functions directly. This is the first phase where these get exercised over real HTTP.
+- Must include, over real HTTP: the full state-machine transition table (all four legal transitions → 200/matching status; representative illegal transitions → 409 with `current_status`/`attempted_status` in the body); a 404 on both `GET /api/complaints/{id}` and `PATCH .../status` for a nonexistent ID; a 400 on a request body violating `text`'s 10-char minimum; pagination (`page_size` > 100 rejected or clamped — per whatever Plan decides against Open Question 1/2).
+- **The mandatory Determinism test (CONTRACTS.md §2.5), full end-to-end HTTP form for the first time:** `POST /api/complaints` with the app's triage provider swapped to `SimulatedTriage(always_raise=True)` (via dependency override, not by mutating global state) still returns `201`, and the persisted/returned row has `triaged_by == "rules:fallback"`. Phase 6 proved this at the service-function level (`test_services_complaints.py::TestMandatoryDeterminism`); this is the first time it's proven through the actual HTTP path FastAPI will serve in production.
+- Re-run combined with all prior test files (`test_repositories.py`, `test_triage_providers.py`, `test_llm_triage.py`, `test_services_complaints.py`) — twice, to catch order dependency, same precedent as Phase 6.
+- `ruff check .` and `mypy app` clean.
+- Manual verification: at least one real `curl`/httpie call per endpoint against the running compose stack, output pasted in As-Built, not just pytest output.
+
+## Ambiguity handling
+If anything found during Plan drafting conflicts with CONTRACTS.md or has no citable source, stop and ask — do not silently resolve. (Five candidates already surfaced above, as Open Questions, for exactly this reason.)
+
+## As-Built
+
+**Deviations from Plan:**
+- Exception handler signatures widened from the specific exception subtype (`exc: NotFoundError`) to `exc: Exception` with an `assert isinstance(exc, ...)` inside, in all three handlers (`app/exception_handlers.py`). `Starlette.add_exception_handler`'s own type signature only accepts `Callable[[Request, Exception], ...]`; mypy strict rejected the narrower signatures (`Argument 2 to "add_exception_handler"... incompatible type`). The `assert` documents and enforces the same contract at runtime — Starlette only ever calls a handler with the type it was registered for.
+- A route-shared `app/routes/dependencies.py` was added, not explicitly listed as its own numbered file in the Plan (it was implied by "a `Depends()` that reads it back" in step 8) — `get_triage_provider`/`TriageProviderDep` needed a home reachable from all three new route modules (`complaints.py`, `meta.py`), not just `main.py`.
+- Everything else matches the Plan's file list and technical choices as approved, including the `get_complaint()` → `NotFoundError` fix from the prior review round.
+
+**Verification — real output, not summarized:**
+
+Standalone new-test run (`pytest tests/test_routes_complaints.py -v -o asyncio_mode=auto`):
+```
+collected 16 items
+...
+======================== 16 passed, 2 warnings in 1.46s ========================
+```
+All 16 pass, including `TestMandatoryDeterminism::test_provider_that_always_raises_still_returns_201` — the first full HTTP-level proof of CONTRACTS.md §2.5's mandatory Determinism test.
+
+Combined run with every prior test file (`test_repositories.py`, `test_triage_providers.py`, `test_llm_triage.py`, `test_services_complaints.py`, `test_routes_complaints.py`), twice:
+```
+======================= 153 passed, 2 warnings in 2.70s ========================
+======================= 153 passed, 2 warnings in 2.61s ========================
+```
+(153 = 137 pre-existing + 16 new; identical count both runs, no order dependency.)
+
+`ruff check .` → `All checks passed!` (one line-length fix needed first, in the new test file's `_create_payload` default argument — wrapped onto its own line).
+
+`mypy app` → `Success: no issues found in 30 source files`.
+
+**Manual HTTP verification against the built image** (`civicpulse-backend:dev`, run as an ad-hoc container on the compose `internal` network with `TRIAGE_PROVIDER=simulated` explicitly supplied — see "New finding" below for why this couldn't be `docker compose up backend` unmodified):
+
+```
+POST /api/complaints -> 201
+{"id":"...","category":"water","priority":"high","status":"open","triaged_by":"simulated", ...}
+
+GET /api/complaints/{id} -> 200
+GET /api/complaints/{missing-id} -> 404
+{"detail":"complaint b5e2060f-363a-46a3-9a38-f37e841297cd not found"}
+
+GET /api/complaints?page=1&page_size=5 -> 200
+{"items":[...], "total": ..., "page": 1, "page_size": 5}
+
+PATCH .../status {"status":"in_progress"} (legal) -> 200
+PATCH .../status {"status":"open"} (illegal, in_progress->open) -> 409
+{"detail":{"message":"in_progress -> open is not a legal transition","current_status":"in_progress","attempted_status":"open"}}
+
+POST /api/complaints {"text":"too short",...} -> 400
+{"detail":[{"type":"string_too_short","loc":["body","text"],"msg":"String should have at least 10 characters","input":"too short","ctx":{"min_length":10}}]}
+
+GET /api/stats -> 200
+{"counts_by_status":{"rejected":3,"resolved":6,"open":15,"in_progress":13}, "counts_by_category":{...}, "average_triage_latency_ms": ...}
+
+GET /api/meta/providers -> 200
+{"active_provider":"simulated","recent_outcomes":[{"provider":"simulated","latency_ms":0,"fallback":false}, ...]}
+
+GET /health -> 200 {"status":"ok"}
+GET /ready -> 200 {"status":"ready"}
+```
+Every status code and body shape matches this spec's Deliverables section exactly (404 `detail` string, 409 `detail` object naming both statuses, 400 FastAPI-native field-error list). The manually-created verification row was deleted afterward via direct SQL; not left in the seed data.
+
+**New finding, disclosed, not silently fixed:** `docker compose up -d --build backend` (unmodified) crashes at startup — `KeyError: 'TRIAGE_PROVIDER'` in `providers/triage/factory.py:44`, because `TRIAGE_PROVIDER` is set in none of `.env`, `.env.example`, or `compose.yaml`'s backend `environment:` block. This is a real, pre-existing gap that this phase's `main.py` change exposes for the first time — no earlier phase's `main.py` ever called `get_triage_provider()`. The crash itself is correct, intended behavior (`providers/triage/factory.py`'s own docstring: an unset/bad value must fail fast at startup, per ADR 0001) — the gap is that the dev compose stack has never actually supplied a value for it to fail-fast or succeed on. Not fixed here: `compose.yaml`/`.env` are shared config outside this phase's Deliverables list, and picking a default silently would be exactly the kind of undisclosed decision `docs/WORKFLOW.md` calls out. Manual verification above used an ad-hoc container with `TRIAGE_PROVIDER=simulated` passed directly, touching no tracked file. **Needs a decision:** add `TRIAGE_PROVIDER=simulated` (or another value) to `.env.example` and `compose.yaml`'s backend `environment:` block, so `docker compose up` works unmodified.
+
+**Scope discipline:** `docs/RUBRIC-CHECKLIST.md` was read but not edited — updating it wasn't a named Deliverable this phase (consistent with Phase 6's precedent). The relevant Category C line (all endpoints wired) is now substantively true but left for the user to check off.
+
+**Cleanup:** all ad-hoc containers (`civicpulse-test-runner`, `backend-verify`) removed; `postgres`/`redis` stopped; `backend` container removed (image `civicpulse-backend:dev` left built, since compose can't currently boot it standalone — see finding above).
+
+**Three-failure-mode audit:** no silent decisions (the `TRIAGE_PROVIDER` gap and the exception-handler signature widening are both disclosed above, not buried); no unverified claims (every status/body pasted is real output, not described); no undisclosed scope creep (`routes/dependencies.py` addition disclosed under Deviations).

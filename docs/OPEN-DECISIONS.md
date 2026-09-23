@@ -1,73 +1,107 @@
 # Open Decisions
 
-Everything below is left open by the assignment on purpose. None of these are answered here — each is a question for the project owner, with the spec's own trade-off hints attached. Answering one may warrant an ADR later (the spec explicitly requires ADRs for the frontend runtime-config choice, deploy-by-SHA, PII/data-governance, and the provider interface).
+Everything below is left open by the assignment on purpose. Each is a question for the project owner, with the spec's own trade-off hints attached. Answering one may warrant an ADR later (the spec explicitly requires ADRs for the frontend runtime-config choice, deploy-by-SHA, PII/data-governance, and the provider interface).
 
-## 1. LLM provider choice
+## Resolved so far
 
-Spec's own framing (§2.5):
+| # | Decision | Answer |
+|---|---|---|
+| 1 | LLM provider | Google Gemini API, model `gemini-3.1-flash-lite` |
+| 2 | Backend framework | FastAPI |
+| 3 | K8s manifest tool | Kustomize |
+| 4 | Local cluster | k3d |
+| 5 | PII stance | Hybrid redaction — see `docs/adr/0004-pii-and-data-governance.md` (Accepted) |
+| 6 | Repository / product name | CivicPulse (confirmed, no rename) |
+| 7 | Rate-limiter algorithm | Fixed-window |
+| 8 | Load-test tool | k6 |
+| 9 | Scope given team status | Full assignment scope, self-paced timeline — see note in §9 below |
+
+Still open: 10 (bonus items) — revisit before the CI/CD phase.
+
+## 1. LLM provider choice — RESOLVED
+
+**Decided:** Google Gemini API, model `gemini-3.1-flash-lite`. `LLMTriage` is built against Gemini's API; no need to also implement a Groq path.
+
+**Free-tier verification (checked 2026-09-19), per the spec's own instruction to "cite what you actually saw":**
+
+- Fetched `https://ai.google.dev/gemini-api/docs/pricing` directly (Google's own current pricing page, not a third-party aggregator). Its free-tier table lists **Gemini 3.1 Flash-Lite** with pricing explicitly marked **"Free of charge"** for input/output tokens — confirmed as free-tier eligible, not a paid-only preview model. (Gemini 2.5 Flash-Lite is also listed as free-tier eligible on the same page, as a fallback if 3.1 Flash-Lite is ever pulled from free tier.)
+- Fetched `https://ai.google.dev/gemini-api/docs/rate-limits` directly. This page does **not** publish a static per-model free-tier RPM/TPM/RPD table — it states rate limits depend on account tier and directs to the live dashboard at `https://aistudio.google.com/rate-limit`. So the exact numeric limit could not be pulled from Google's own docs in this session.
+- Cross-referenced several independent third-party trackers (not Google's own docs, so weaker evidence, but consistent with each other): they converge on **15 requests/minute, 1,000 requests/day** for Gemini 3.1 Flash-Lite's free tier, and confirm **no credit card / no Google Cloud billing account is required** to obtain a free-tier API key via Google AI Studio — matching the assignment's own claim about Gemini's free tier (§2.5).
+- Confirmed from Google's own pricing page and corroborated by third-party sources: **on the free tier, Google may use inputs to improve its models** — this is the same caveat the assignment names, and it's what makes decision 5 (PII stance) a live decision rather than boilerplate.
+
+**Action before Phase 1 backend work starts:** get an actual API key from Google AI Studio and read the live numbers at `aistudio.google.com/rate-limit` directly — that dashboard, not any doc page, is Google's authoritative source for the account's real current limits. Record whatever is seen there in this file, replacing the 15 RPM / 1,000 RPD figure above with the confirmed number.
+
+Spec's own framing (§2.5), kept for reference:
 
 - **Groq** — "recommended primary." OpenAI-compatible endpoint (official `openai` SDK works via `base_url`). Free tier gated only by rate limits, applied at the org level and per model, no credits/billing. Fast inference — "matters when a citizen is watching a spinner."
-- **Google AI Studio (Gemini)** — "recommended alternative." Free tier on Flash/Flash-Lite, no credit card, generous daily allowance, native structured-output support. Caveat: on the free tier Google may use inputs to improve its models — complaints contain names, addresses, phone numbers, so this is a PII decision, not just a provider pick (feeds into decision 5 below).
-- **Ollama** — zero-dependency, no key, no network, no rate limit, no PII leaving the machine. Slower on CPU, "noticeably worse at classification" — the buy-vs-host trade-off, measured rather than asserted. "If free-tier keys become a problem for anyone in your team, take this path — you lose no marks for it."
-- **Other workable options**: OpenRouter free tier, Cloudflare Workers AI, Hugging Face Inference — acceptable if free and documented.
+- **Google AI Studio (Gemini)** — "recommended alternative." Free tier on Flash/Flash-Lite, no credit card, generous daily allowance, native structured-output support. Caveat: on the free tier Google may use inputs to improve its models — complaints contain names, addresses, phone numbers, so this is a PII decision, not just a provider pick (feeds into decision 5 below, now live since Gemini is the chosen provider).
+- **Ollama** — zero-dependency, no key, no network, no rate limit, no PII leaving the machine. Still required as the offline `OllamaTriage` implementation regardless of which hosted provider is chosen (§2.5 requires ≥3 implementations including it).
+- **Other workable options**: OpenRouter free tier, Cloudflare Workers AI, Hugging Face Inference — not needed now that Gemini is chosen.
 
-**Question:** Which provider is `LLMTriage` built against — Groq, Gemini, or an "other" option — and is Ollama the sole path (skipping a hosted provider entirely) an acceptable simplification here?
+## 2. FastAPI vs Flask — RESOLVED
 
-## 2. FastAPI vs Flask
+**Decided:** FastAPI. Reasoning (human's own): this is the spec's recommended path, and its auto-generated OpenAPI schema is what drives the frontend's typed API client — picking Flask would mean building that schema-to-client pipeline by hand for no offsetting benefit.
 
-Spec (§2.2): "FastAPI + Pydantic v2 (recommended) or Flask (permitted; say so in the README)." FastAPI is recommended specifically because its OpenAPI schema is what the frontend's typed client is generated/checked against, and because Pydantic models validate both HTTP input and LLM output with one mental model.
+Spec (§2.2), kept for reference: "FastAPI + Pydantic v2 (recommended) or Flask (permitted; say so in the README)." FastAPI is recommended specifically because its OpenAPI schema is what the frontend's typed client is generated/checked against, and because Pydantic models validate both HTTP input and LLM output with one mental model.
 
-**Question:** FastAPI (per the stated recommendation) or Flask? If Flask, what replaces the "OpenAPI schema drives the typed frontend client" requirement (§2.1 "Required engineering")?
+## 3. Kustomize vs Helm — RESOLVED
 
-## 3. Kustomize vs Helm
+**Decided:** Kustomize. Reasoning (human's own): matches the assignment's own §5.7 folder layout (`k8s/base` + `overlays/dev`, `overlays/prod`) exactly, with no extra templating tool to introduce.
 
-Spec (§3.3): "Manifests, organised with Kustomize (base/ plus overlays/dev and overlays/prod). Helm is acceptable if you prefer it; say so in an ADR."
+Spec (§3.3), kept for reference: "Manifests, organised with Kustomize (base/ plus overlays/dev and overlays/prod). Helm is acceptable if you prefer it; say so in an ADR."
 
-**Question:** Kustomize (the default path, matches the §5.7 repo layout as written) or Helm (requires its own ADR and a different `k8s/` layout than §5.7 shows)?
+## 4. k3d vs kind — RESOLVED
 
-## 4. k3d vs kind
+**Decided:** k3d. Reasoning (human's own): faster iteration loop, and an easier local-registry story for the CI job that spins up an ephemeral cluster and deploys freshly built images into it.
 
-Spec (§3.3): "Local cluster: k3d or kind — both run inside Docker, both are free, both work on a student laptop. A managed cloud cluster is not required and earns no extra marks."
+Spec (§3.3), kept for reference: "Local cluster: k3d or kind — both run inside Docker, both are free, both work on a student laptop. A managed cloud cluster is not required and earns no extra marks."
 
-**Question:** k3d or kind, for both local dev and the ephemeral cluster spun up inside the `cd.yml` GitHub Actions runner?
+## 5. PII handling stance — RESOLVED
 
-## 5. PII handling stance
+**Decided:** Hybrid regex-based redaction (phone numbers, email addresses) applied to `text` only, before it reaches Gemini; `location` sent unmodified. Full detail, residual-risk statement, and layer ownership in `docs/adr/0004-pii-and-data-governance.md` (status: Accepted).
 
-Spec (§2.5): "Citizen complaints contain names, addresses and phone numbers. Write the resulting PII decision into an ADR — redact before sending, send only the complaint body, or accept and document the exposure." This is explicitly named as one of the four required ADRs (§4, Category J) and directly depends on decision 1 (which provider, and whether that provider's free tier uses inputs for training).
+Spec (§2.5), kept for reference: "Citizen complaints contain names, addresses and phone numbers. Write the resulting PII decision into an ADR — redact before sending, send only the complaint body, or accept and document the exposure."
 
-**Question:** Which stance — (a) redact PII from complaint text before it reaches any hosted LLM, (b) send only the complaint body and accept whatever residual PII is embedded in the free text, or (c) accept and explicitly document the exposure? This gates what `LLMTriage` is allowed to send over the wire.
+## 6. Repository / product name — RESOLVED
 
-## 6. Repository / product name
+**Decided:** Keep "CivicPulse." No rename.
 
-Spec (§1.2): "You may rename the product. Keep the contracts in §2 — they are what gets tested." The current repo folder is `assign_1`; the assignment's own layout example uses `civicpulse/` as the root folder name.
+Spec (§1.2), kept for reference: "You may rename the product. Keep the contracts in §2 — they are what gets tested."
 
-**Question:** Keep "CivicPulse" as the product/repo name, or rename? (Contracts in `docs/CONTRACTS.md` are unaffected either way.)
+## 7. Rate-limiter algorithm — RESOLVED
 
-## 7. Rate-limiter algorithm
+**Decided:** Fixed-window. Reasoning (human's own): the requirement here is quota protection, not traffic smoothing — a fixed-window counter (`INCR` + `EXPIRE` in Redis) is simple and easier to test deterministically than a Lua-scripted token bucket, and quota protection is exactly what §2.4 Job 2 is for (stopping a bored user's `for` loop from exhausting the free-tier LLM quota, not shaping traffic curves).
 
-Spec (§2.4, Job 2): "A fixed-window or token-bucket counter in Redis, keyed by client IP." Both satisfy the letter of the contract (429 + `Retry-After` on `POST /api/complaints`); they differ in burst behaviour and implementation complexity.
+Spec (§2.4, Job 2), kept for reference: "A fixed-window or token-bucket counter in Redis, keyed by client IP." Both satisfy the letter of the contract (429 + `Retry-After` on `POST /api/complaints`).
 
-**Question:** Fixed-window (simpler, allows a burst at window boundaries) or token-bucket (smoother, slightly more Redis logic)?
+## 8. Load-test tool — RESOLVED
 
-## 8. Load-test tool
+**Decided:** k6. Reasoning (human's own): matches the repo's own `load/k6-script.js` path already named in §5.7, and supports ramping virtual users — needed to actually produce the replicas-vs-load chart the rubric requires (§4-H), which a single-shot tool like `hey` doesn't model well.
 
-Spec (§3.3, HPA deliverable): "generate load with k6 or hey."
+Spec (§3.3, HPA deliverable), kept for reference: "generate load with k6 or hey."
 
-**Question:** k6 (JS-based, richer scripting, matches the `load/k6-script.js` path already named in §5.7) or hey (single static binary, simpler but less expressive)? Given §5.7 already names `load/k6-script.js`, k6 looks like the path of least resistance unless there's a reason to deviate.
+## 9. Scope configuration given team status — RESOLVED
 
-## 9. Scope configuration given solo status
+**Decided:** There is a real 2-person team on paper; a specific person will probably join, but he has not started and there is no confirmed date. When and if he does, slices from `docs/PARALLEL-WORK-PLAN.md` will be handed to him. Timeline: self-paced, ignoring the assignment's own conflicting 2-week/4-week framing (§5.1) — build to the full assignment scope (not the "split into two assignments" hedge) at whatever pace actually works.
 
-Spec (§5.1) offers three configurations, none of which is "solo":
+**Residual risk, not eliminated by this decision:** Category A's partner-dependent line items (≥5 PRs with the partner's substantive review, the 35% commit-share floor, a real two-author merge conflict) still require the partner to actually contribute for a nontrivial stretch of time before submission — deciding "he'll join later" doesn't manufacture that history retroactively. If he joins late, those items may still need to be compressed into whatever time remains. Tracked in `docs/RUBRIC-CHECKLIST.md`.
+
+Original framing kept for reference — spec (§5.1) offers three configurations, none of which is "solo-with-a-later-joiner":
 - As written, 4 weeks, teams of 2.
 - Teams of 3, frontend owned by one member, PR floor raised to 7, commit floor to 30% each.
 - Split into two assignments: A1 = parts A–G (Docker/Compose, 110 marks), A2 = parts H–J (Kubernetes/CI-CD) on the same repo — "the safest option for a first run."
-
-None of these directly addresses building solo with a possible late-joining partner. Category A (collaboration, 15 marks) assumes two people throughout (partner PR reviews, commit-share floor, a merge conflict between two contributors, a viva on a partner's code).
-
-**Question:** Is there course guidance for solo students (e.g. a modified Category A rubric, or explicit permission to treat those 15 marks as forfeit), or should the project just be built to the full two-person spec and hope a partner joins in time to backfill collaboration evidence? Also worth deciding: attempt the assignment as written in full, or informally target the "split into two assignments" scope order (A–G first, fully solid, before touching H–J) as a risk hedge?
 
 ## 10. Bonus items to pursue (capped at +15)
 
 Spec (§4, Bonus): zero-downtime rolling update under live load (+4), GitOps via Argo CD/Flux (+4), deploy-by-digest with Cosign signing (+3), Prometheus + Grafana dashboard (+2), OpenTelemetry tracing frontend→backend→LLM (+2).
 
 **Question:** Attempt any bonus items, and if so which — or treat the 150-mark core as the entire scope until it's solid, given solo bandwidth?
+
+## 11. Prometheus can't reach `/metrics` under the current compose shape
+
+Raised during Phase 7b (`docs/specs/phase-07b-metrics.md`, Open Question 4).
+`GET /metrics` exists and is verified working (`docs/specs/phase-07b-metrics.md`'s As-Built), but `compose.yaml`'s `backend` service publishes no host port at all today — only `frontend` has `ports: ["8080:8080"]`. A real, host-run Prometheus instance cannot scrape `/metrics` under the current compose shape without either publishing a backend port or running Prometheus itself as a compose service on the `edge` network.
+
+This blocks the rest of RUBRIC-CHECKLIST.md's bonus line ("Prometheus scraping /metrics plus a Grafana dashboard, screenshot committed", +2) — the endpoint and instrumentation are done, the scraping/dashboard/screenshot piece isn't, and can't be until this is decided.
+
+**Question:** publish a backend host port (weighing against §5.3's automatic-deduction list — a published *database or cache* port in `compose.prod.yaml` is a −8, but this is the backend API port in dev `compose.yaml`, a different case, not obviously covered by that penalty) versus running Prometheus as its own compose service on `edge`, reaching `backend` by service name the way `frontend` already does. Not decided here — candidate answer for whichever phase actually builds the Prometheus/Grafana pieces (Docker/Compose hardening, `docs/IMPLEMENTATION-PLAN.md` Phase 10, is the natural owner, but that's not decided either).

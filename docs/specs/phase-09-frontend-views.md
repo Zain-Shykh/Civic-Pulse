@@ -302,3 +302,67 @@ Matches every numbered step above exactly: step 1's inline triage result came fr
 - **Silent decisions?** None beyond the five deviations listed above, all disclosed with why, all within the Plan's 15 files, none re-opening OQ1–6.
 - **Unverified claims?** None — every Verification-required item above has real, pasted output; the manual walkthrough's method (scripted real-browser, not a human's eyes) is stated plainly rather than implied to be something it wasn't.
 - **Undisclosed scope creep?** None — no file outside the Plan's list of 15 was created, renamed, or "improved."
+
+## Addendum — surface X-Cache
+
+Closes the gap logged in this file's As-Built (Deviation-adjacent, not a deviation — a known omission) and in `docs/RUBRIC-CHECKLIST.md`'s Category B Stats line. The Stats view (Deliverable c) already exists and is approved; this adds the one thing it was missing. Spec and Plan combined in one section — the scope is one response header, rendered in one already-existing view, per `docs/WORKFLOW.md`'s "depth scales with complexity, not a mandate for padding."
+
+### What's being added
+
+`Stats.tsx` reads the `X-Cache` header that already arrives on every `GET /api/stats` response (`docs/specs/phase-08-cache-layer.md` — nothing backend-side changes, the header has existed since Phase 8) and renders a small, citizen/operator-facing freshness indicator next to the aggregates — not the raw header value.
+
+### Files touched, in dependency order
+
+1. **`frontend/src/api/client.ts`** — `request<T>()` currently discards the `Response` object once it parses the JSON body, so `getStats()` has no way to read a header today. Rather than widening the shared `ApiResult<T>`/`useApiCall` machinery (which every other call site would then carry unused fields through), `request()` gains one optional third parameter: a `parseSuccess?: (response: Response) => Promise<T>` callback, used only on the success branch. When omitted (every existing call site — `createComplaint`, `listComplaints`, `updateStatus`), behavior is byte-for-byte identical to today (`(await response.json()) as T`). Only `getStats()` passes one, folding the header into the data it already returns:
+   ```ts
+   export const getStats = () =>
+     request<StatsWithCacheState>("/stats", undefined, async (response) => {
+       const body = (await response.json()) as Stats;
+       const header = response.headers.get("X-Cache");
+       const cacheState: CacheState = header === "HIT" || header === "MISS" ? header : null;
+       return { ...body, cacheState };
+     });
+   ```
+   `null` covers a missing/unexpected header value rather than assuming one of the two — defensive, not a new business rule (the actual HIT/MISS decision stays entirely backend-side, per `docs/specs/phase-08-cache-layer.md`).
+
+2. **`frontend/src/api/types.ts`** — two small additions, no existing type changes:
+   ```ts
+   export type CacheState = "HIT" | "MISS" | null;
+
+   export interface StatsWithCacheState extends Stats {
+     cacheState: CacheState;
+   }
+   ```
+   `Stats`'s existing `[key: string]: unknown` index signature already accepts this addition without modification.
+
+3. **`frontend/src/pages/Stats.tsx`** — renders `cacheState` as its own line, translated (see wording below), and excludes the `cacheState` key from the existing generic `Object.entries(state.data)` loop (that loop stays generic for every *aggregate* field; `cacheState` isn't an aggregate, it's meta-information about the response itself, so it gets its own line rather than appearing as a bullet indistinguishable from `average_triage_latency_ms`).
+
+4. **`frontend/tests/Stats.test.tsx`** — extended, not replaced: the existing test's mock response gains an `X-Cache` header (so it keeps asserting the generic-aggregate-rendering behavior it already covers, now against a response shaped like a real one); two new cases assert `X-Cache: HIT` renders the "cached" wording and `X-Cache: MISS` renders "fresh."
+
+No new file, no file outside these four (three of which are already-approved Phase 9 files; `types.ts` was already touched by the original Plan too).
+
+### Confirms this doesn't reopen Phase 9's Open Questions
+
+- **No router (OQ1).** Same single Stats view, no navigation change.
+- **No new HTTP client (OQ2).** Still native `fetch`; the header is read off the same `Response` object `fetch` already returns.
+- **No typed-client-strategy change (OQ3).** `CacheState`/`StatsWithCacheState` are hand-typed the same way every other type in `types.ts` is.
+- **No new test framework (OQ4).** Extends the existing Vitest/Testing Library file.
+- **No new data-fetching library (OQ5).** `useApiCall`/`getStats()`'s call shape from `Stats.tsx`'s point of view is unchanged — it still gets back `state.data`, now with one more field on it.
+- **OQ6 (enum line-drawing) doesn't apply here** — `HIT`/`MISS`/`null` isn't a business-decision enum like `Category`/`Priority`/`Status`, it's a literal mirror of the header's only possible values.
+
+### Wording: "fresh" / "cached," not "HIT" / "MISS"
+
+`X-Cache: HIT` means this request's data came from the Redis read-through cache (`docs/specs/phase-08-cache-layer.md`); `MISS` means it was just recomputed from Postgres. Those are accurate, but they're cache-protocol/HTTP-header jargon — meaningful to a developer debugging cache behavior, not to a citizen or operator looking at a stats dashboard, who has no reason to know what an `X-Cache` header is or which of its two values means what. "Fresh" (MISS — recomputed just now) and "cached" (HIT — served from the last computed snapshot, explicitly invalidated on every write per Phase 8, so never stale relative to a write the viewer could have caused) say the same thing in terms the dashboard's actual audience already understands, without requiring them to learn the protocol term first. This is a real, if small, UX call — stated here rather than defaulted to printing the raw header value silently.
+
+### Verification required (after approval)
+
+```
+npm run build
+npm run typecheck
+npm run lint
+npm run test
+```
+Plus a manual check against the real compose stack: `GET /api/stats` immediately after a write shows "fresh," a repeat request within the 30 s TTL shows "cached," matching `docs/specs/phase-08-cache-layer.md`'s As-Built MISS→HIT sequence.
+
+### As-Built
+(Empty — this addendum has not been implemented; pending review.)

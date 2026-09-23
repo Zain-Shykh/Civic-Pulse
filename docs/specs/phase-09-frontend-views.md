@@ -1,5 +1,5 @@
 # Phase 9: Frontend real views
-Status: not started
+Status: done
 Depends on: Phase 7 (routes), Phase 8 (cache layer — rate limiter and X-Cache both show up in response shapes this phase must handle)
 Reads first: docs/CONTRACTS.md §2.2 (API table, status state machine, enums), docs/PARALLEL-WORK-PLAN.md ("Slice: Frontend"), docs/adr/0002-frontend-runtime-config.md, frontend/nginx.conf, frontend/package.json, frontend/src/*
 
@@ -203,4 +203,102 @@ Manual browser walkthrough (`docker compose up -d`, open the frontend's publishe
 Open Question 6 above is exactly this section in practice: a real ambiguity between two directly-stated constraints (need concrete filter options vs. no hand-copied enum lists) that isn't resolved by silent assumption — surfaced for a decision instead.
 
 ## As-Built
-(Empty — this phase has not been implemented.)
+
+Implemented in `c19d85d` against the approved Plan (`f739d2a`, `498642c`), no re-decided Open Questions. Status: done.
+
+### Network-failure handling (added per the approved-implementation message)
+
+`api/client.ts`'s `request<T>()` wraps the `fetch()` call itself in a `try`/`catch`. If `fetch()` throws (backend unreachable, DNS/network failure — not an HTTP error status, there is no `Response` to branch on at all), the `catch` maps it into a new `ApiError` variant, `{ kind: "network"; message }`, and returns it as an ordinary `ApiResult` failure — the same shape every other error takes. No exception ever propagates out of `request()`, so no view can produce an unhandled promise rejection from this path; each view's `useApiCall` catches the returned `ApiResult` and sets `{ status: "error", error }` exactly as it does for a 400/404/409/429.
+
+Tested directly in `frontend/tests/api-client.test.ts`, `"maps fetch() itself throwing (network failure) to a network error, without an unhandled rejection"` — stubs `global.fetch` with `vi.fn().mockRejectedValue(new TypeError("Failed to fetch"))`, asserts `result.ok === false`, `result.error.kind === "network"`, and that the original message is preserved. This test is part of the 11 passing tests below; the suite would show an unhandled-rejection warning/failure if the `try`/`catch` were missing, and it doesn't.
+
+### Deviations from the Plan (all within the Plan's 15 files, no new files)
+
+1. **`ApiError` gains a `"network"` kind**, not anticipated by the original Plan — added directly per this phase's approved-implementation message, which asked explicitly for this case to be handled and mapped into the existing union "or an equivalent." Documented above.
+2. **`client.ts` gains a small `describeApiError(error): string` helper**, not itemized in the Plan's file-5 description. Avoids repeating the same six-way `error.kind` switch in Submit/Dashboard/Stats; Submit still renders `"validation"` as its own structured `<ul>` (per Deliverable a), everything else in all three views goes through this one function.
+3. **Dashboard's status `<td>` gets `data-testid="status"`**, not itemized in the Plan. Needed to disambiguate the status-value cell from the same-named status-action `<button>`s in tests and in the Playwright walkthrough script — both literally render the string `"open"`/`"in_progress"`/etc.
+4. **The three React test files call Testing Library's `cleanup()` manually in `afterEach`.** Found while running the suite: with `globals: false` (an OQ4/Plan decision, kept), Testing Library's automatic per-test DOM cleanup never gets registered, so each test's render silently stacked on the previous one within a file — surfaced as a real test failure (`Found multiple elements with the role "button" and name "in_progress"`), not a hypothetical. Fixed by importing `cleanup` from `@testing-library/react` and calling it in the same `afterEach` that already existed for `vi.unstubAllGlobals()`.
+5. **`App.tsx`'s nav button reads "New complaint," not "Submit."** Found during the manual browser walkthrough (see below): with the Submit view active, the nav bar's "Submit" button and the form's own "Submit" button are both on screen with the identical accessible name — a real ambiguity for anyone navigating by name (keyboard, screen reader, or Playwright's own `getByRole`), not a test-only artifact. Renamed the nav button; the view's internal identifier (`"submit"`) is unchanged.
+
+None of these touch a file outside the Plan's list of 15, and none re-opens any of the six Open Questions.
+
+### Automated verification (`frontend/`, real pasted output)
+
+```
+$ npm run build
+> civicpulse-frontend@0.1.0 build
+> tsc -b && vite build
+
+vite v8.3.0 building client environment for production...
+transforming...
+✓ 19 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                  0.32 kB │ gzip:  0.23 kB
+dist/assets/index-ClYkurbh.js  147.00 kB │ gzip: 47.66 kB
+✓ built in 72ms
+
+$ npm run typecheck
+> civicpulse-frontend@0.1.0 typecheck
+> tsc -b --noEmit
+(no output — clean)
+
+$ npm run lint
+> civicpulse-frontend@0.1.0 lint
+> eslint .
+(no output — clean)
+
+$ npm run test
+> civicpulse-frontend@0.1.0 test
+> vitest run
+
+ RUN  v5.0.1 /home/zain-shykh/Desktop/SCD_ASSIGNMENTS/assign_1/frontend
+
+ Test Files  4 passed (4)
+      Tests  11 passed (11)
+   Start at  23:55:15
+   Duration  1.38s (environment 66%, tests 21%, import 9%, transform 3%, worker 1%)
+```
+
+### Manual browser walkthrough — real headless Chrome, real compose stack
+
+No interactive browser/screenshot tool is available in this sandboxed session, so this was driven by a short Playwright script launching the system's real `/usr/bin/google-chrome` and clicking/typing through the actual rendered DOM — a genuine browser render and interaction, over real HTTP, through nginx, against the full `docker compose up -d --build` stack (not `npm run dev`, no mocks) — not a human visually inspecting pixels, but strictly more than a curl-only check. Disclosed explicitly rather than silently substituted.
+
+Stack brought up clean (`postgres`/`redis` healthy, `backend` healthy, `frontend` built and started), then:
+
+```
+[STEP 1] Submit result rendered:
+Category: roads
+Priority: normal
+Summary: A pothole has appeared near the market, walkthrough run 1790189664701.
+Triaged by: rules
+
+[STEP 2] Dashboard rows containing "Walkthrough Location": 1
+
+[STEP 3] Stats rendered:
+counts_by_status: {"rejected":3,"resolved":6,"open":16,"in_progress":12}
+counts_by_category: {"other":6,"roads":7,"sanitation":6,"electricity":6,"water":6,"streetlights":6}
+average_triage_latency_ms: 547.8378378378378
+
+[STEP 4] 400 validation errors rendered:
+text: String should have at least 10 characters
+location: String should have at least 3 characters
+
+[STEP 5] 429 hit on attempt 10: "Try again in 57s"
+
+[STEP 6] Row status before any action: "open"
+
+[STEP 6] After illegal open->resolved click: alert="Cannot move from open to resolved: open -> resolved is not a legal transition", status cell now="open"
+
+[STEP 7] After legal open->in_progress click: status cell now="in_progress"
+```
+
+Matches every numbered step above exactly: step 1's inline triage result came from the 201 response alone (one request, confirmed by the earlier Playwright run's explicit `fetchMock` call-count assertion in the Vitest suite, not repeated here); step 3's `open` count is 16 vs. 15 before step 1 (the seed baseline, confirmed against `docs/specs/phase-08-cache-layer.md`'s As-Built); step 5's rate limit tripped on the 10th attempt with `rate_limit_max = 10` (the config default, no override in `compose.yaml`), and the message used the real `Retry-After` value, not a hardcoded one; step 6 shows the 409 body's `current_status`/`attempted_status` rendered and the row's own status cell unchanged; step 7 shows the same row updating in place after a legal transition.
+
+**Cleanup:** the walkthrough's 10 inserted rows (`location IN ('Walkthrough Location', 'Rate Limit Location')`) were deleted from the dev Postgres afterward; row count confirmed back at the seeded baseline of 36.
+
+### WORKFLOW.md three-failure-mode audit
+
+- **Silent decisions?** None beyond the five deviations listed above, all disclosed with why, all within the Plan's 15 files, none re-opening OQ1–6.
+- **Unverified claims?** None — every Verification-required item above has real, pasted output; the manual walkthrough's method (scripted real-browser, not a human's eyes) is stated plainly rather than implied to be something it wasn't.
+- **Undisclosed scope creep?** None — no file outside the Plan's list of 15 was created, renamed, or "improved."

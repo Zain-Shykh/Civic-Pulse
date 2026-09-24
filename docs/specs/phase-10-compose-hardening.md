@@ -1,5 +1,5 @@
 # Phase 10: Docker/Compose hardening
-Status: in progress
+Status: done
 Depends on: Phases 3-9 (and 9c) — this phase hardens the images/compose shape those phases produced, against the real app, not the Phase 2 walking skeleton.
 Reads first: `docs/IMPLEMENTATION-PLAN.md`'s Phase 10 entry, `docs/OPEN-DECISIONS.md` #11, `docs/adr/0001-triage-provider-interface.md`, `docs/adr/0003-deploy-by-sha.md`, `compose.prod.yaml`, `compose.yaml`, `backend/.dockerignore`, `frontend/.dockerignore`
 
@@ -174,3 +174,55 @@ For commands 3–8 (the real `docker compose up -d --build` loop against dev `co
 Nothing here is uncertain — all three edits are single, small, mechanical changes to files already fully read this session; the only judgment calls (the `${VAR:?msg}` mechanism, unconditional requirement, Prometheus architecture) were already made and recorded above as the two Open Questions' decisions.
 
 ## As-Built
+
+Implemented exactly the three files the Plan named. Commit `815be7e` (`fix:` — chosen over `feat:` because this hardens existing, already-shipped prod-compose behavior rather than adding new functionality).
+
+**`git diff --stat` for the implementation commit** (confirms no scope beyond the Plan):
+```
+.env.example          | 4 ++++
+backend/.dockerignore | 2 ++
+compose.prod.yaml     | 2 ++
+3 files changed, 8 insertions(+)
+```
+
+**Verification — all 8 commands, real output:**
+
+1. `docker compose --env-file <scratch-missing>.env -f compose.prod.yaml config` (isolated scratch file defining only `POSTGRES_*`/`GHCR_NAMESPACE`/`IMAGE_TAG`, deliberately omitting `TRIAGE_PROVIDER`/`GEMINI_API_KEY`) — failed as required, exit 1:
+   ```
+   error while interpolating services.backend.environment.GEMINI_API_KEY: required variable GEMINI_API_KEY is missing a value: GEMINI_API_KEY must be set for a production deploy
+   error while interpolating services.backend.environment.TRIAGE_PROVIDER: required variable TRIAGE_PROVIDER is missing a value: TRIAGE_PROVIDER must be set for a production deploy — see docs/adr/0001-triage-provider-interface.md
+   ```
+   Note: Compose wraps the custom `:?` message in its own `error while interpolating services.backend.environment.<VAR>: required variable <VAR> is missing a value:` prefix. The spec's Deliverable (a) only ever specified the custom message text itself (the part after that prefix), which matches verbatim; the wrapper phrasing is Compose's own format, not something this phase authored or predicted.
+
+2. Same command against a "complete" scratch file (same base plus `TRIAGE_PROVIDER=llm`, `GEMINI_API_KEY=dummy-value-for-config-check-only`) — succeeded, exit 0, full config rendered correctly, e.g.:
+   ```yaml
+   environment:
+     DATABASE_URL: postgresql+psycopg://civicpulse:change-me@postgres:5432/civicpulse
+     GEMINI_API_KEY: dummy-value-for-config-check-only
+     REDIS_URL: redis://redis:6379/0
+     TRIAGE_PROVIDER: llm
+   image: ghcr.io/OWNER/civicpulse-backend:latest
+   ```
+   Both scratch files lived under the job's tmp directory only, never committed, never touching the repo's real `.env`.
+
+3. `docker compose up -d --build` against the real dev `compose.yaml` (fresh context — `backend/.dockerignore` changed) — all four containers reached `healthy`:
+   ```
+   assign_1-backend-1    civicpulse-backend:dev    Up (healthy)
+   assign_1-frontend-1   civicpulse-frontend:dev   Up (healthy)
+   assign_1-postgres-1   postgres:16-alpine        Up (healthy)
+   assign_1-redis-1      redis:7-alpine            Up (healthy)
+   ```
+
+4. `docker compose exec backend python -c "...urlopen('http://127.0.0.1:8000/health')..."` → `200 {"status":"ok"}`
+
+5. `docker compose exec backend python -c "...urlopen('http://127.0.0.1:8000/ready')..."` → `200 {"status":"ready"}`
+
+6. `docker compose exec frontend ping -c 2 postgres` → `ping: bad address 'postgres'`, exit 1
+
+7. `docker compose exec frontend ping -c 2 redis` → `ping: bad address 'redis'`, exit 1
+
+8. `docker compose down` — clean teardown, all containers/networks removed, no orphans. No `/api/complaints` calls were made during this pass, so no seeded-DB row cleanup was needed (unlike prior phases' verification passes).
+
+**Deviations from Plan or Spec:** none. All three edits match the Plan's exact diffs; the `docker compose config` wrapper-message wording (noted under command 1 above) is the only place real output differed at all from what the spec quoted, and it's Compose's own formatting around a message this phase did control and which matched exactly.
+
+**Three-failure-mode audit:** no silent decisions (both Open Questions were resolved by the user before implementation, nothing re-decided here); no unverified claims (every result above is real, pasted command output, not a description); no undisclosed scope creep (`git diff --stat` above confirms exactly the three planned files, eight lines, nothing else).

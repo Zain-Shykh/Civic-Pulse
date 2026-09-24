@@ -103,9 +103,13 @@ Recommendation: resolve the *architectural* question now, defer the *execution*.
 
 Not executed in this phase's Deliverables: actually adding a `prometheus` service (plus its scrape config, plus Grafana, plus a dashboard/screenshot) is bonus-item work gated behind `docs/OPEN-DECISIONS.md` #10 ("which bonus items to pursue," still open, explicitly deferred to "revisit before the CI/CD phase" by `CLAUDE.md` itself). Building it now would be undisclosed scope creep into a decision this project has already agreed not to make yet. So: #11 is resolved as "if pursued, run Prometheus as an `edge`-network compose service, no new published port" — carried forward only as *execution*, not left ambiguous as *design*.
 
+**Decided:** (b), exactly as recommended above. If the Prometheus/Grafana bonus item is ever pursued, Prometheus runs as its own compose service on the `edge` network, scraping `backend:8000/metrics` by Docker service name — the same mechanism `frontend` already uses to reach `backend`. No published host port on `backend`, ever, for this purpose. This is an architecture decision only: no `prometheus` service, scrape config, Grafana, or related compose/dependency change lands in this phase — execution stays gated behind `docs/OPEN-DECISIONS.md` #10. `docs/OPEN-DECISIONS.md` #11 itself has been updated to record this resolution (see that file).
+
 **2. Should `GEMINI_API_KEY` be unconditionally required in `compose.prod.yaml`, even if someone sets `TRIAGE_PROVIDER` to `rules`/`simulated` for a prod-shaped test run?**
 
 Recommendation: yes, require both unconditionally. `compose.prod.yaml` exists to model exactly one real deployment shape — the one that actually runs `LLMTriage` — not a general-purpose "prod or prod-like" toggle. Making `GEMINI_API_KEY` conditionally required (only if `TRIAGE_PROVIDER=llm`) needs either a shell wrapper script or Compose profiles to express, which is more moving parts than this problem is worth; the plain `${VAR:?msg}` form deliberately trades a small amount of flexibility (can't spin up prod-shaped compose with `rules` and no key) for a one-line, un-bypassable check. If a genuine need for a keyless prod-shaped smoke test shows up later, that's a real decision to flag then, not a hypothetical to build against now.
+
+**Decided:** Option A, exactly as recommended and exactly as already drafted in Deliverable (a) — `${TRIAGE_PROVIDER:?...}` and `${GEMINI_API_KEY:?...}`, both unconditional, no conditional logic, no Compose profiles, no wrapper script. `compose.prod.yaml` must refuse to start with either variable missing, regardless of which triage provider is selected. No change to Deliverable (a)'s already-drafted mechanism.
 
 ## Verification required
 
@@ -124,5 +128,49 @@ Exact commands (matching Phase 2's own Part D loop, against the real app, plus t
 If anything here conflicts with `CONTRACTS.md`, any ADR, or is underspecified, stop and ask — do not silently resolve.
 
 ## Plan
+
+Three files touched, in this order — each is independent of the others, ordered by dependency between the fail-fast fix and its own documentation, then the unrelated `.dockerignore` cleanup last:
+
+**1. `compose.prod.yaml`** — edit only the `backend` service's existing `environment:` block (lines confirmed current, re-checked against the real file this session, not assumed from the earlier spec draft). Add two keys after the existing `DATABASE_URL`/`REDIS_URL` lines:
+
+```yaml
+      TRIAGE_PROVIDER: ${TRIAGE_PROVIDER:?TRIAGE_PROVIDER must be set for a production deploy — see docs/adr/0001-triage-provider-interface.md}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?GEMINI_API_KEY must be set for a production deploy}
+```
+
+No other line in the file changes — `frontend`/`postgres`/`redis` services, networks, volumes, resource limits all stay exactly as they are today.
+
+**2. `.env.example`** — add one new section, placed immediately after the existing "compose.prod.yaml only: image source" block (re-checked current content this session — it still has no `GEMINI_API_KEY` line anywhere, confirming the spec's earlier finding wasn't stale):
+
+```
+# --- compose.prod.yaml only: triage provider (required, no default — Compose itself errors if unset) ---
+TRIAGE_PROVIDER=llm
+GEMINI_API_KEY=your-gemini-api-key-here
+```
+
+The existing dev section's `TRIAGE_PROVIDER=rules` line is untouched — two different variables sharing a name across two sections is already how `POSTGRES_*` works in this same file (shared section) and how `IMAGE_TAG` is prod-only today, so this isn't a new pattern.
+
+**3. `backend/.dockerignore`** — append two lines (re-checked current content this session — still the same 16 lines as the spec draft found, no drift):
+
+```
+build
+*.egg-info
+```
+
+No changes to `frontend/.dockerignore` (confirmed, again, still correct as-is).
+
+**Verification, run after all three edits land:**
+
+The 8 commands already listed under "Verification required" above, run for real and pasted into As-Built — not reused from the spec-drafting session's output, since the `.dockerignore` edit means a fresh `--build` produces a genuinely new image, and the `compose.prod.yaml`/`.env.example` edits are entirely new behavior that's never been exercised.
+
+For commands 1–2 (`docker compose config` against `compose.prod.yaml`, once failing, once succeeding), the repo's real `.env` already exists and may already define `GEMINI_API_KEY`/`TRIAGE_PROVIDER` for dev use — using it unmodified would contaminate the "missing variable" test. Isolate with two throwaway env files instead of touching the real `.env`:
+- a "missing" scratch file defining only `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB`/`GHCR_NAMESPACE`/`IMAGE_TAG`, deliberately omitting `TRIAGE_PROVIDER`/`GEMINI_API_KEY`
+- a "complete" scratch file with the same plus `TRIAGE_PROVIDER=llm` and a dummy `GEMINI_API_KEY` value (never a real key — this only exercises Compose's variable substitution, no container starts, no Gemini call happens)
+
+both passed via `docker compose --env-file <scratch>.env -f compose.prod.yaml config`, both scratch files written under the job's tmp directory, neither committed.
+
+For commands 3–8 (the real `docker compose up -d --build` loop against dev `compose.yaml`), no scratch file trick is needed — this is the same real app, same real `.env`, same procedure already run once for the spec draft; rerunning it just confirms the `.dockerignore` change didn't break anything. As before: no `/api/complaints` calls happen during this pass, so no DB cleanup is needed afterward; `docker compose down` after, same as last time.
+
+Nothing here is uncertain — all three edits are single, small, mechanical changes to files already fully read this session; the only judgment calls (the `${VAR:?msg}` mechanism, unconditional requirement, Prometheus architecture) were already made and recorded above as the two Open Questions' decisions.
 
 ## As-Built

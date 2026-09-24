@@ -8,6 +8,14 @@ export type Category = "water" | "electricity" | "sanitation" | "roads" | "stree
 export type Priority = "high" | "normal" | "low";
 export type Status = "open" | "in_progress" | "resolved" | "rejected";
 
+// docs/specs/phase-09c-visual-redesign.md's Plan §13. Relocated from
+// Dashboard.tsx (Phase 9) so Home's categories sentence can reuse the same
+// list instead of a second hand-copied one — still schema/type knowledge
+// only, per Open Question 6, not transition decision logic.
+export const CATEGORIES: Category[] = ["water", "electricity", "sanitation", "roads", "streetlights", "other"];
+export const PRIORITIES: Priority[] = ["high", "normal", "low"];
+export const STATUSES: Status[] = ["open", "in_progress", "resolved", "rejected"];
+
 export interface Complaint {
   id: string;
   text: string;

@@ -2,7 +2,8 @@
 // GET /api/stats returns generically — no hardcoded assumption of exactly
 // which status keys exist. Addendum: surfaces X-Cache as a plain-language
 // freshness indicator ("fresh"/"cached"), not the raw HIT/MISS header value
-// — see the Addendum's "Wording" section for why.
+// — see the Addendum's "Wording" section for why. Restyled in
+// docs/specs/phase-09c-visual-redesign.md — same logic, new markup only.
 import { useEffect } from "react";
 
 import { describeApiError, getStats } from "../api/client";
@@ -22,14 +23,18 @@ export default function Stats() {
   }, [run]);
 
   return (
-    <div>
-      <h2>Stats</h2>
-      {state.status === "loading" && <p>Loading…</p>}
-      {state.status === "error" && <p role="alert">{describeApiError(state.error)}</p>}
+    <div className="mx-auto max-w-2xl px-4 py-10">
+      <h2 className="text-2xl font-semibold text-ink">Stats</h2>
+      {state.status === "loading" && <p className="mt-4">Loading…</p>}
+      {state.status === "error" && (
+        <p role="alert" className="mt-4 text-priority-high">
+          {describeApiError(state.error)}
+        </p>
+      )}
       {state.status === "success" && (
         <>
-          <p>Data: {cacheStateLabel(state.data.cacheState)}</p>
-          <ul>
+          <p className="mt-4 text-sm text-ink-secondary">Data: {cacheStateLabel(state.data.cacheState)}</p>
+          <ul className="mt-2 space-y-1 font-mono text-sm text-ink">
             {Object.entries(state.data)
               .filter(([key]) => key !== "cacheState")
               .map(([key, value]) => (

@@ -1,0 +1,414 @@
+# Phase 9: Frontend real views
+Status: done
+Depends on: Phase 7 (routes), Phase 8 (cache layer — rate limiter and X-Cache both show up in response shapes this phase must handle)
+Reads first: docs/CONTRACTS.md §2.2 (API table, status state machine, enums), docs/PARALLEL-WORK-PLAN.md ("Slice: Frontend"), docs/adr/0002-frontend-runtime-config.md, frontend/nginx.conf, frontend/package.json, frontend/src/*
+
+## Goal
+Replace the walking-skeleton `Placeholder` page with three real views — Submit, Dashboard, Stats — and a typed API client, each built directly against `docs/CONTRACTS.md`'s API table with zero duplicated backend business rules: the frontend renders what the backend returns or rejects, it never independently decides what's a legal status transition or re-validates what only the backend is allowed to validate.
+
+## Deliverables
+
+**(a) Submit view** (`frontend/src/pages/Submit.tsx`) — consumes `POST /api/complaints` (CONTRACTS.md §2.2: "Validate → triage → persist. 201. 400 with a field-level error body. 429 when the caller exceeds the rate limit."):
+- A form for `text`, `location`, `reporter_contact` (optional).
+- 201: render the response body as-is — `category`, `priority`, `ai_summary`, `triaged_by` — this is the same call's response, no second request needed to show the triage result.
+- 400: render the field-level error body the backend returns, not a client-side re-validation of length/format rules (those limits — 10–2000 chars for `text`, 3–200 for `location` — live in `docs/CONTRACTS.md`'s schema table, i.e. in the backend; the form does not hardcode and pre-reject against them, it submits and shows whatever the backend says).
+- 429: read the `Retry-After` header (Phase 8's rate limiter, `docs/specs/phase-08-cache-layer.md`) and render a "try again in Ns" message from it.
+
+**(b) Dashboard view** (`frontend/src/pages/Dashboard.tsx`) — consumes `GET /api/complaints` (filter by category/priority/status, paginate `page`/`page_size` ≤ 100, return `total`) and `PATCH /api/complaints/{id}/status`:
+- A paginated list of complaints.
+- Per-row status-change actions. Per `PARALLEL-WORK-PLAN.md`'s constraint (no duplicated status-transition table): the UI does **not** precompute which of the four statuses (`open`/`in_progress`/`resolved`/`rejected`) are legal from the row's current status. It always offers all statuses as an action, always sends the `PATCH`, and renders whatever comes back — `200` updates the row in place; `409` renders the backend's rejection body (`current_status`, `attempted_status`) inline next to that row, verbatim. The backend's transition table (`docs/CONTRACTS.md` §2.2) is the only place that decision is made.
+- Filtering by category/priority/status needs the dropdown *option lists* for those three enums somewhere in the frontend to render as selectable filters — see Open Question 6 below for exactly what may and may not be duplicated here.
+
+**(c) Stats view** (`frontend/src/pages/Stats.tsx`) — consumes `GET /api/stats` (aggregates, Redis-cached, `X-Cache: HIT|MISS`, `docs/specs/phase-08-cache-layer.md`):
+- Renders `counts_by_status`, `average_triage_latency_ms`, and whatever else the response body contains, generically (no hardcoded assumption of exactly N status keys — render the map the backend sends).
+- Does **not** surface the `X-Cache` header value in the UI. Checked directly: neither `docs/CONTRACTS.md` nor `docs/RUBRIC-CHECKLIST.md` asks for cache-state to be user-visible; it's an internal freshness mechanism, not a dashboard feature. (Confirmed absent, not assumed absent — see Non-goals.)
+
+**(d) Typed API client** (`frontend/src/api/`) — one module used by all three views:
+- Request/response types mirroring `docs/CONTRACTS.md`'s schema (the `Category`/`Priority`/`Status` enums, the complaint shape, the paginated-list envelope, the two error-response shapes — 400's field-level body and 409's `{current_status, attempted_status}` body).
+- Thin wrapper functions per endpoint actually consumed by the three views above: `createComplaint`, `listComplaints`, `updateStatus`, `getStats`. `GET /api/complaints/{id}` and `GET /api/meta/providers` are **not** wrapped — see Non-goals.
+
+## Non-goals
+- No server-side rendering.
+- No auth/login (not in `docs/CONTRACTS.md` — there is no authenticated endpoint anywhere in the API table).
+- No surfacing of the `X-Cache` header (Stats view) or `triage_cache_hit_rate` (that field lives on `GET /api/meta/providers`, which no named view consumes — see below) anywhere in the UI. Checked directly against `docs/CONTRACTS.md` and `docs/RUBRIC-CHECKLIST.md`; no requirement found either way, so this is a default-off decision, not an oversight — flag if that reading is wrong.
+- No complaint-detail drill-down page and no `GET /api/complaints/{id}` consumption. None of the three named views (`docs/PARALLEL-WORK-PLAN.md`) needs it: Submit shows its own POST response, Dashboard shows list rows with inline actions.
+- No `/api/meta/providers` view. Not one of the three named views or an `IMPLEMENTATION-PLAN.md` Phase 9 deliverable; it's an observability surface for provider health, not a citizen/operator-facing view. Revisit if a future phase adds an ops view.
+- No hand-copied *decision logic* — the status-transition table stays backend-only, enforced by always attempting every action and rendering the real response (Deliverable b). Enum *value lists* used purely as type/label definitions are addressed separately in Open Question 6, not silently included or excluded here.
+- No OpenAPI-codegen build step and no router library added yet — both are named Open Questions below, not preempted.
+- No component test framework added yet — same reason (Open Question 4).
+
+## Open Questions
+
+**OQ1 — Routing.** Does a 3-view app need a router library, or is local state enough?
+*Recommendation:* no router library. `useState<'submit' | 'dashboard' | 'stats'>` in `App.tsx` (or equivalent) fully covers three flat, non-nested, non-deep-linked views. Nothing in `docs/CONTRACTS.md` or the rubric asks for shareable URLs per view. Adding `react-router` here is a new dependency for a routing problem this app doesn't have. Revisit if a later phase needs deep-linking (e.g. a shareable link to a specific complaint).
+
+**OQ2 — HTTP client.** Native `fetch` vs. adding a library (axios, ky, …)?
+*Recommendation:* native `fetch`. Every capability the three views need — GET/POST/PATCH, reading `response.status`, reading the `Retry-After` header — is directly on the Fetch API already available in every target browser and in Vitest's jsdom/happy-dom environment (pending OQ4). No interceptor chain, no cancellation-token complexity, no new dependency justified at this scale.
+
+**OQ3 — Typed API client: hand-typed vs. OpenAPI codegen.** `docs/PARALLEL-WORK-PLAN.md` names both as acceptable ("generated from or hand-typed against the OpenAPI schema").
+*Recommendation:* hand-typed. `frontend/src/api/types.ts` written directly against `docs/CONTRACTS.md`'s schema table and cross-checked against the backend's live `/openapi.json` at review time (already available for that check, per Phase 7's "Done looks like" — no new build-time tool needed to read it). A codegen tool (`openapi-typescript`, `orval`, …) is a new dev dependency plus a new build step to keep 9 endpoints' types in sync, 3 of which the frontend even consumes. Revisit if the API surface grows enough that manual sync becomes a real, recurring cost.
+
+**OQ4 — Test framework.** Nothing is pinned in `frontend/package.json` today.
+*Recommendation:* Vitest + `@testing-library/react` (+ `@testing-library/user-event`). Vitest shares Vite's own config and module resolution (same maintainer, no separate transform pipeline for ESM the way Jest would need here), and Testing Library is the standard fit for the "component tests" `docs/PARALLEL-WORK-PLAN.md` names as a Frontend-slice deliverable. This is genuinely new dependencies (today there are zero test-related packages) — flagged explicitly for approval, not assumed.
+
+**OQ5 — Data-fetching / loading-state pattern.** Hand-rolled `useState`/`useEffect` vs. a library (React Query, SWR, …), given all three views need loading/error/data state against a small, fixed set of endpoints.
+*Recommendation:* a small hand-rolled hook (e.g. `useApiCall`), not a new dependency. React Query/SWR's core value — cache dedup, background refetch, stale-while-revalidate — solves a problem this app doesn't have: 3 views, 4 endpoints, no polling or optimistic-update requirement anywhere in `docs/CONTRACTS.md`. Revisit if the Dashboard later needs live polling.
+
+**OQ6 — Category/Priority/Status enum source for the Dashboard's filter dropdowns.** *(Found during this drafting pass, not one of the five originally asked for — surfacing it rather than silently resolving it either way, per `docs/WORKFLOW.md`.)* `docs/PARALLEL-WORK-PLAN.md` twice states the frontend must not render "a hand-copied category/priority list... as if they were a frontend-owned source of truth." But Deliverable (b)'s filter UI needs *some* concrete list of selectable values before any request returns data — they can't be discovered from a response the user hasn't fetched yet.
+*Recommendation:* draw a line between **type/label definitions** (fine) and **decision logic** (not fine). The typed API client (Deliverable d) already has to define `Category`/`Priority`/`Status` as TypeScript union types to type the complaint shape at all — that's schema knowledge mirroring `docs/CONTRACTS.md`, not an invented business rule, and the backend still independently validates every request regardless of what the dropdown offered. What must never be duplicated is *decision* logic — which specific transitions are legal from a given state — and Deliverable (b) already avoids that by never precomputing legal actions (see above). So: the enum value lists may live in `api/types.ts` as passthrough type/label definitions; the transition table may not exist anywhere in the frontend, full stop. Flag if this reading of "duplicated business rule" is too permissive.
+
+## Plan
+
+### Files touched/created, in dependency order
+
+1. **`frontend/package.json`** — new dependencies (exact pins, matching this repo's existing no-range style — `backend/pyproject.toml` pins exact versions, `frontend/package.json` already pins `react`/`react-dom` without `^`):
+   - `devDependencies`: `vitest` `5.0.1`, `@testing-library/react` `16.3.3`, `@testing-library/user-event` `14.6.7`, `jsdom` `30.1.1`.
+   - New scripts: `"test": "vitest run"` (single-shot, CI-friendly — not the interactive watch mode, matching `verify`-style commands used everywhere else in this project).
+   - **`jsdom` is a new dependency not named in OQ4's approval text** — Vitest doesn't bundle a DOM environment; OQ4 approved "Vitest + Testing Library" and jsdom is what makes either of those runnable outside a real browser. Flagging it explicitly here rather than silently adding a fourth package under cover of an already-approved OQ.
+   - No `@testing-library/jest-dom`. Not in the approved OQ4 list. Tests will rely on Testing Library's own throwing queries (`getByText`/`getByRole` throw if not found) and plain `expect(x).toBe(y)`/`toEqual(y)` instead of jest-dom's custom matchers (`toBeInTheDocument()` etc.). See "Still uncertain."
+
+2. **`frontend/vite.config.ts`** — one file, not a separate `vitest.config.ts`. Vitest ships `defineConfig` from `"vitest/config"` that re-exports Vite's own `defineConfig` merged with `test`-block typing, so switching the single existing import (`vite` → `vitest/config`) and adding a `test: { environment: "jsdom", globals: false }` block is the whole change — no second config file, no duplicated `plugins: [react()]`.
+   - **Environment: `jsdom`, not `happy-dom`.** Both are real options; `happy-dom` is lighter/faster but has known DOM-API gaps (form submission, some layout/CSS behavior) that `@testing-library/react`'s own test suite is written against `jsdom`, not `happy-dom`. At this project's scale (a handful of component test files), jsdom's maturity outweighs happy-dom's marginal speed edge. Standard, not exotic — jsdom is Vitest's own documented default recommendation for React component testing.
+   - **`globals: false`**, not Vitest's ambient-global mode. Every test file explicitly imports `describe`/`it`/`expect`/`vi` from `"vitest"`. Matches this project's existing preference for explicit imports over ambient magic (`tsconfig.app.json` already sets `verbatimModuleSyntax: true`, `moduleDetection: "force"` — no implicit globals anywhere else in the frontend either).
+
+3. **`frontend/tsconfig.app.json`** — add `"tests"` to the `include` array (currently `["src"]` only). Without this, `tsc -b`/`tsc -b --noEmit` never typechecks anything under `frontend/tests/`, so `npm run build` and `npm run typecheck` would stay green even if the new test files had type errors — a real gap the current tsconfig has today (it was written for the walking skeleton, which had no tests yet). No `tsconfig.node.json` change needed — `vite.config.ts`'s new `"vitest/config"` import resolves via `node_modules`' own types, not a `types:` array entry.
+
+4. **`frontend/src/api/types.ts`** — hand-typed against `docs/CONTRACTS.md` (OQ3), enum value lists per OQ6's line:
+   ```ts
+   export type Category = "water" | "electricity" | "sanitation" | "roads" | "streetlights" | "other";
+   export type Priority = "high" | "normal" | "low";
+   export type Status = "open" | "in_progress" | "resolved" | "rejected";
+
+   export interface Complaint {
+     id: string;
+     text: string;
+     location: string;
+     reporter_contact: string | null;
+     category: Category;
+     priority: Priority;
+     status: Status;
+     ai_summary: string | null;
+     triaged_by: string;
+     triage_latency_ms: number;
+     created_at: string;
+     updated_at: string;
+   }
+
+   export interface ComplaintCreateRequest {
+     text: string;
+     location: string;
+     reporter_contact?: string | null;
+   }
+
+   export interface PaginatedList<T> {
+     items: T[];
+     total: number;
+     page: number;
+     page_size: number;
+   }
+
+   export interface Stats {
+     counts_by_status: Record<string, number>;
+     average_triage_latency_ms: number;
+     [key: string]: unknown; // rendered generically (Deliverable c) — schema may grow
+   }
+
+   export interface ValidationErrorItem { loc: (string | number)[]; msg: string; type: string }
+
+   export type ApiError =
+     | { kind: "validation"; status: 400; errors: ValidationErrorItem[] }
+     | { kind: "not_found"; status: 404; message: string }
+     | { kind: "transition"; status: 409; message: string; currentStatus: Status; attemptedStatus: Status }
+     | { kind: "rate_limited"; status: 429; message: string; retryAfterSeconds: number }
+     | { kind: "unknown"; status: number; body: unknown };
+
+   export type ApiResult<T> = { ok: true; data: T } | { ok: false; error: ApiError };
+   ```
+   `ValidationErrorItem` mirrors FastAPI's own default `RequestValidationError` shape (`backend/app/exception_handlers.py`'s `validation_error_handler`: `{"detail": jsonable_encoder(exc.errors())}` — each item has `loc`/`msg`/`type`), and the 409 shape mirrors `illegal_transition_handler`'s `{"detail": {"message", "current_status", "attempted_status"}}` exactly — both read directly from the actual handler code, not guessed.
+
+5. **`frontend/src/api/client.ts`** — one `request<T>()` helper mapping `fetch`'s response into `ApiResult<T>` by status code (400/404/409/429/else), plus four thin exports: `createComplaint`, `listComplaints`, `updateStatus`, `getStats`. Every call is a relative `fetch("/api/...")` (ADR 0002 — no base URL, ever). `GET /api/complaints/{id}` and `GET /api/meta/providers` are not wrapped (Non-goals).
+
+6. **`frontend/src/hooks/useApiCall.ts`** — the OQ5 hand-rolled hook, shown once, reused by Submit/Stats and by Dashboard's list-fetch:
+   ```ts
+   type CallState<T> =
+     | { status: "idle" }
+     | { status: "loading" }
+     | { status: "success"; data: T }
+     | { status: "error"; error: ApiError };
+
+   function useApiCall<T, Args extends unknown[]>(
+     fn: (...args: Args) => Promise<ApiResult<T>>,
+   ): [CallState<T>, (...args: Args) => Promise<ApiResult<T>>] {
+     const [state, setState] = useState<CallState<T>>({ status: "idle" });
+     const run = useCallback(
+       async (...args: Args) => {
+         setState({ status: "loading" });
+         const result = await fn(...args);
+         setState(result.ok ? { status: "success", data: result.data } : { status: "error", error: result.error });
+         return result;
+       },
+       [fn],
+     );
+     return [state, run];
+   }
+   ```
+   **Dashboard's per-row status action does *not* use this hook.** `useApiCall` models exactly one in-flight call at a time; a list of rows can have several actions in flight simultaneously, each needing its own loading/error state keyed by complaint id. Dashboard instead keeps a small local `Record<string, { loading: boolean; error?: ApiError }>` keyed by id and calls `updateStatus` directly. This is a deliberate, disclosed divergence from "the hook's shape shown once, reused by all three views" as originally asked — Submit and Stats (and Dashboard's own list-fetch) do reuse it unchanged; only Dashboard's per-row action doesn't, for the structural reason above.
+
+7. **`frontend/src/pages/Submit.tsx`** — form + `useApiCall(createComplaint)`. Renders, per state: `loading` → disabled submit button; `success` → the 201 body's `category`/`priority`/`ai_summary`/`triaged_by` inline; `error` → branches only on `error.kind` (four fixed cases, not per-field/per-status content):
+   - `"validation"` → generic list, `errors.map(e => <li>{String(e.loc.at(-1))}: {e.msg}</li>)`.
+   - `"rate_limited"` → `Try again in {retryAfterSeconds}s`.
+   - anything else → the raw message, unbranched.
+
+8. **`frontend/src/pages/Dashboard.tsx`** — `useApiCall(listComplaints)` run on mount and whenever page/filters change (a plain `useEffect`, no data-fetching library per OQ5); category/priority/status filter `<select>`s populated from the OQ6-approved value lists in `api/types.ts`; per row, four always-present status-action buttons; a row's 409 renders `Cannot move from {currentStatus} to {attemptedStatus}: {message}` — one generic template, not a per-transition-pair hardcoded message.
+
+9. **`frontend/src/pages/Stats.tsx`** — `useApiCall(getStats)` run on mount; renders `Object.entries(data.counts_by_status)` and `average_triage_latency_ms` generically (Deliverable c already specifies this; restated here only to fix its place in file order).
+
+10. **`frontend/src/App.tsx`** — replaces the `Placeholder` import with the three real views and a `useState<"submit" | "dashboard" | "stats">("submit")` switcher (OQ1) plus three nav buttons.
+
+11. **Delete `frontend/src/pages/Placeholder.tsx`** — fully superseded, no caller left; not left behind as dead code.
+
+12. **`frontend/tests/api-client.test.ts`** — `request()`'s status-code branching, with `global.fetch` stubbed per test (no MSW/nock — no new mocking dependency beyond what OQ4 already approved). Covers all five `ApiError["kind"]` branches, including reading the real `Retry-After` header value into `retryAfterSeconds`.
+
+13. **`frontend/tests/Submit.test.tsx`** — renders `<Submit />`, stubs `fetch`, drives a 201 (result rendered), a 400 (generic list rendered), and a 429 (retry message rendered) through `@testing-library/user-event`.
+
+14. **`frontend/tests/Dashboard.test.tsx`** — renders `<Dashboard />`, stubs `fetch`, asserts a 409 on one row's action renders that row's message without touching any other row's status, and a 200 updates the row in place.
+
+15. **`frontend/tests/Stats.test.tsx`** — renders `<Stats />`, stubs `fetch`, asserts the rendered output reflects an arbitrary `counts_by_status` map (proving it's generic, not hardcoded to today's status set).
+
+### Still uncertain
+- No `@testing-library/jest-dom` (see file 1) — if plain-DOM assertions prove too awkward once real tests are written, adding it is a one-line `package.json`/`vite.config.ts` change; not pre-added on spec alone.
+- Dashboard's pagination control (prev/next vs. numbered pages) isn't decided — `docs/CONTRACTS.md` only requires `page`/`page_size`/`total` exist, not a specific control shape. Default to prev/next; revisit if a real need for jump-to-page shows up.
+- The manual walkthrough (below) runs against the full `docker compose` stack (nginx proxying `/api`, per ADR 0002), not Vite's own dev server (`npm run dev`) — Vite's dev server has no proxy configured today and none is being added in this phase (out of the stated Deliverables). `npm run dev` therefore stays frontend-only/no-backend for now; this matches how every prior phase's manual verification has been done (compose stack up, real browser), not a new gap introduced here.
+
+## Verification required
+
+Automated (real pasted output required in the implementation report, not a claimed pass count — same bar as every prior phase):
+```
+npm run build
+npm run typecheck
+npm run lint
+npm run test
+```
+
+Manual browser walkthrough (`docker compose up -d`, open the frontend's published port, e.g. `http://localhost:8080`):
+1. Submit a valid complaint (`text` ≥ 10 chars, `location` ≥ 3 chars). Confirm the 201 response's `category`/`priority`/`ai_summary`/`triaged_by` render inline on the Submit view itself — no second request.
+2. Switch to Dashboard. Confirm the just-submitted complaint appears in the list.
+3. Switch to Stats. Confirm `counts_by_status` reflects the new complaint (its status's count incremented by 1 vs. before step 1).
+4. Submit an intentionally invalid complaint (`text` under 10 chars). Confirm the 400 response's field-level errors render as a generic list, not a blank/generic "something went wrong."
+5. From the Submit view, submit `settings.rate_limit_max` times in quick succession, then once more. Confirm the final submission renders the 429 message using the response's actual `Retry-After` value (not a hardcoded number).
+6. On Dashboard, attempt an illegal transition (e.g. click "resolved" on a row still `open`, skipping `in_progress`). Confirm the 409 rejection renders inline next to that row (naming `current_status`/`attempted_status`) and the row's displayed status does not change.
+7. On Dashboard, perform a legal transition on the same or another row (e.g. `open` → `in_progress`). Confirm 200 and the row updates in place, and that step 6's row (still showing its 409) was unaffected by this action.
+
+## Ambiguity handling
+Open Question 6 above is exactly this section in practice: a real ambiguity between two directly-stated constraints (need concrete filter options vs. no hand-copied enum lists) that isn't resolved by silent assumption — surfaced for a decision instead.
+
+## As-Built
+
+Implemented in `c19d85d` against the approved Plan (`f739d2a`, `498642c`), no re-decided Open Questions. Status: done.
+
+### Network-failure handling (added per the approved-implementation message)
+
+`api/client.ts`'s `request<T>()` wraps the `fetch()` call itself in a `try`/`catch`. If `fetch()` throws (backend unreachable, DNS/network failure — not an HTTP error status, there is no `Response` to branch on at all), the `catch` maps it into a new `ApiError` variant, `{ kind: "network"; message }`, and returns it as an ordinary `ApiResult` failure — the same shape every other error takes. No exception ever propagates out of `request()`, so no view can produce an unhandled promise rejection from this path; each view's `useApiCall` catches the returned `ApiResult` and sets `{ status: "error", error }` exactly as it does for a 400/404/409/429.
+
+Tested directly in `frontend/tests/api-client.test.ts`, `"maps fetch() itself throwing (network failure) to a network error, without an unhandled rejection"` — stubs `global.fetch` with `vi.fn().mockRejectedValue(new TypeError("Failed to fetch"))`, asserts `result.ok === false`, `result.error.kind === "network"`, and that the original message is preserved. This test is part of the 11 passing tests below; the suite would show an unhandled-rejection warning/failure if the `try`/`catch` were missing, and it doesn't.
+
+### Deviations from the Plan (all within the Plan's 15 files, no new files)
+
+1. **`ApiError` gains a `"network"` kind**, not anticipated by the original Plan — added directly per this phase's approved-implementation message, which asked explicitly for this case to be handled and mapped into the existing union "or an equivalent." Documented above.
+2. **`client.ts` gains a small `describeApiError(error): string` helper**, not itemized in the Plan's file-5 description. Avoids repeating the same six-way `error.kind` switch in Submit/Dashboard/Stats; Submit still renders `"validation"` as its own structured `<ul>` (per Deliverable a), everything else in all three views goes through this one function.
+3. **Dashboard's status `<td>` gets `data-testid="status"`**, not itemized in the Plan. Needed to disambiguate the status-value cell from the same-named status-action `<button>`s in tests and in the Playwright walkthrough script — both literally render the string `"open"`/`"in_progress"`/etc.
+4. **The three React test files call Testing Library's `cleanup()` manually in `afterEach`.** Found while running the suite: with `globals: false` (an OQ4/Plan decision, kept), Testing Library's automatic per-test DOM cleanup never gets registered, so each test's render silently stacked on the previous one within a file — surfaced as a real test failure (`Found multiple elements with the role "button" and name "in_progress"`), not a hypothetical. Fixed by importing `cleanup` from `@testing-library/react` and calling it in the same `afterEach` that already existed for `vi.unstubAllGlobals()`.
+5. **`App.tsx`'s nav button reads "New complaint," not "Submit."** Found during the manual browser walkthrough (see below): with the Submit view active, the nav bar's "Submit" button and the form's own "Submit" button are both on screen with the identical accessible name — a real ambiguity for anyone navigating by name (keyboard, screen reader, or Playwright's own `getByRole`), not a test-only artifact. Renamed the nav button; the view's internal identifier (`"submit"`) is unchanged.
+
+None of these touch a file outside the Plan's list of 15, and none re-opens any of the six Open Questions.
+
+### Automated verification (`frontend/`, real pasted output)
+
+```
+$ npm run build
+> civicpulse-frontend@0.1.0 build
+> tsc -b && vite build
+
+vite v8.3.0 building client environment for production...
+transforming...
+✓ 19 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                  0.32 kB │ gzip:  0.23 kB
+dist/assets/index-ClYkurbh.js  147.00 kB │ gzip: 47.66 kB
+✓ built in 72ms
+
+$ npm run typecheck
+> civicpulse-frontend@0.1.0 typecheck
+> tsc -b --noEmit
+(no output — clean)
+
+$ npm run lint
+> civicpulse-frontend@0.1.0 lint
+> eslint .
+(no output — clean)
+
+$ npm run test
+> civicpulse-frontend@0.1.0 test
+> vitest run
+
+ RUN  v5.0.1 /home/zain-shykh/Desktop/SCD_ASSIGNMENTS/assign_1/frontend
+
+ Test Files  4 passed (4)
+      Tests  11 passed (11)
+   Start at  23:55:15
+   Duration  1.38s (environment 66%, tests 21%, import 9%, transform 3%, worker 1%)
+```
+
+### Manual browser walkthrough — real headless Chrome, real compose stack
+
+No interactive browser/screenshot tool is available in this sandboxed session, so this was driven by a short Playwright script launching the system's real `/usr/bin/google-chrome` and clicking/typing through the actual rendered DOM — a genuine browser render and interaction, over real HTTP, through nginx, against the full `docker compose up -d --build` stack (not `npm run dev`, no mocks) — not a human visually inspecting pixels, but strictly more than a curl-only check. Disclosed explicitly rather than silently substituted.
+
+Stack brought up clean (`postgres`/`redis` healthy, `backend` healthy, `frontend` built and started), then:
+
+```
+[STEP 1] Submit result rendered:
+Category: roads
+Priority: normal
+Summary: A pothole has appeared near the market, walkthrough run 1790189664701.
+Triaged by: rules
+
+[STEP 2] Dashboard rows containing "Walkthrough Location": 1
+
+[STEP 3] Stats rendered:
+counts_by_status: {"rejected":3,"resolved":6,"open":16,"in_progress":12}
+counts_by_category: {"other":6,"roads":7,"sanitation":6,"electricity":6,"water":6,"streetlights":6}
+average_triage_latency_ms: 547.8378378378378
+
+[STEP 4] 400 validation errors rendered:
+text: String should have at least 10 characters
+location: String should have at least 3 characters
+
+[STEP 5] 429 hit on attempt 10: "Try again in 57s"
+
+[STEP 6] Row status before any action: "open"
+
+[STEP 6] After illegal open->resolved click: alert="Cannot move from open to resolved: open -> resolved is not a legal transition", status cell now="open"
+
+[STEP 7] After legal open->in_progress click: status cell now="in_progress"
+```
+
+Matches every numbered step above exactly: step 1's inline triage result came from the 201 response alone (one request, confirmed by the earlier Playwright run's explicit `fetchMock` call-count assertion in the Vitest suite, not repeated here); step 3's `open` count is 16 vs. 15 before step 1 (the seed baseline, confirmed against `docs/specs/phase-08-cache-layer.md`'s As-Built); step 5's rate limit tripped on the 10th attempt with `rate_limit_max = 10` (the config default, no override in `compose.yaml`), and the message used the real `Retry-After` value, not a hardcoded one; step 6 shows the 409 body's `current_status`/`attempted_status` rendered and the row's own status cell unchanged; step 7 shows the same row updating in place after a legal transition.
+
+**Cleanup:** the walkthrough's 10 inserted rows (`location IN ('Walkthrough Location', 'Rate Limit Location')`) were deleted from the dev Postgres afterward; row count confirmed back at the seeded baseline of 36.
+
+### WORKFLOW.md three-failure-mode audit
+
+- **Silent decisions?** None beyond the five deviations listed above, all disclosed with why, all within the Plan's 15 files, none re-opening OQ1–6.
+- **Unverified claims?** None — every Verification-required item above has real, pasted output; the manual walkthrough's method (scripted real-browser, not a human's eyes) is stated plainly rather than implied to be something it wasn't.
+- **Undisclosed scope creep?** None — no file outside the Plan's list of 15 was created, renamed, or "improved."
+
+## Addendum — surface X-Cache
+
+Closes the gap logged in this file's As-Built (Deviation-adjacent, not a deviation — a known omission) and in `docs/RUBRIC-CHECKLIST.md`'s Category B Stats line. The Stats view (Deliverable c) already exists and is approved; this adds the one thing it was missing. Spec and Plan combined in one section — the scope is one response header, rendered in one already-existing view, per `docs/WORKFLOW.md`'s "depth scales with complexity, not a mandate for padding."
+
+### What's being added
+
+`Stats.tsx` reads the `X-Cache` header that already arrives on every `GET /api/stats` response (`docs/specs/phase-08-cache-layer.md` — nothing backend-side changes, the header has existed since Phase 8) and renders a small, citizen/operator-facing freshness indicator next to the aggregates — not the raw header value.
+
+### Files touched, in dependency order
+
+1. **`frontend/src/api/client.ts`** — `request<T>()` currently discards the `Response` object once it parses the JSON body, so `getStats()` has no way to read a header today. Rather than widening the shared `ApiResult<T>`/`useApiCall` machinery (which every other call site would then carry unused fields through), `request()` gains one optional third parameter: a `parseSuccess?: (response: Response) => Promise<T>` callback, used only on the success branch. When omitted (every existing call site — `createComplaint`, `listComplaints`, `updateStatus`), behavior is byte-for-byte identical to today (`(await response.json()) as T`). Only `getStats()` passes one, folding the header into the data it already returns:
+   ```ts
+   export const getStats = () =>
+     request<StatsWithCacheState>("/stats", undefined, async (response) => {
+       const body = (await response.json()) as Stats;
+       const header = response.headers.get("X-Cache");
+       const cacheState: CacheState = header === "HIT" || header === "MISS" ? header : null;
+       return { ...body, cacheState };
+     });
+   ```
+   `null` covers a missing/unexpected header value rather than assuming one of the two — defensive, not a new business rule (the actual HIT/MISS decision stays entirely backend-side, per `docs/specs/phase-08-cache-layer.md`).
+
+2. **`frontend/src/api/types.ts`** — two small additions, no existing type changes:
+   ```ts
+   export type CacheState = "HIT" | "MISS" | null;
+
+   export interface StatsWithCacheState extends Stats {
+     cacheState: CacheState;
+   }
+   ```
+   `Stats`'s existing `[key: string]: unknown` index signature already accepts this addition without modification.
+
+3. **`frontend/src/pages/Stats.tsx`** — renders `cacheState` as its own line, translated (see wording below), and excludes the `cacheState` key from the existing generic `Object.entries(state.data)` loop (that loop stays generic for every *aggregate* field; `cacheState` isn't an aggregate, it's meta-information about the response itself, so it gets its own line rather than appearing as a bullet indistinguishable from `average_triage_latency_ms`).
+
+4. **`frontend/tests/Stats.test.tsx`** — extended, not replaced: the existing test's mock response gains an `X-Cache` header (so it keeps asserting the generic-aggregate-rendering behavior it already covers, now against a response shaped like a real one); two new cases assert `X-Cache: HIT` renders the "cached" wording and `X-Cache: MISS` renders "fresh."
+
+No new file, no file outside these four (three of which are already-approved Phase 9 files; `types.ts` was already touched by the original Plan too).
+
+### Confirms this doesn't reopen Phase 9's Open Questions
+
+- **No router (OQ1).** Same single Stats view, no navigation change.
+- **No new HTTP client (OQ2).** Still native `fetch`; the header is read off the same `Response` object `fetch` already returns.
+- **No typed-client-strategy change (OQ3).** `CacheState`/`StatsWithCacheState` are hand-typed the same way every other type in `types.ts` is.
+- **No new test framework (OQ4).** Extends the existing Vitest/Testing Library file.
+- **No new data-fetching library (OQ5).** `useApiCall`/`getStats()`'s call shape from `Stats.tsx`'s point of view is unchanged — it still gets back `state.data`, now with one more field on it.
+- **OQ6 (enum line-drawing) doesn't apply here** — `HIT`/`MISS`/`null` isn't a business-decision enum like `Category`/`Priority`/`Status`, it's a literal mirror of the header's only possible values.
+
+### Wording: "fresh" / "cached," not "HIT" / "MISS"
+
+`X-Cache: HIT` means this request's data came from the Redis read-through cache (`docs/specs/phase-08-cache-layer.md`); `MISS` means it was just recomputed from Postgres. Those are accurate, but they're cache-protocol/HTTP-header jargon — meaningful to a developer debugging cache behavior, not to a citizen or operator looking at a stats dashboard, who has no reason to know what an `X-Cache` header is or which of its two values means what. "Fresh" (MISS — recomputed just now) and "cached" (HIT — served from the last computed snapshot, explicitly invalidated on every write per Phase 8, so never stale relative to a write the viewer could have caused) say the same thing in terms the dashboard's actual audience already understands, without requiring them to learn the protocol term first. This is a real, if small, UX call — stated here rather than defaulted to printing the raw header value silently.
+
+### Verification required (after approval)
+
+```
+npm run build
+npm run typecheck
+npm run lint
+npm run test
+```
+Plus a manual check against the real compose stack: `GET /api/stats` immediately after a write shows "fresh," a repeat request within the 30 s TTL shows "cached," matching `docs/specs/phase-08-cache-layer.md`'s As-Built MISS→HIT sequence.
+
+### As-Built
+
+Implemented in `a6c716d` exactly against the Plan above — no new files, no reopened Open Questions, only the four named files touched.
+
+**Automated verification (real pasted output):**
+
+```
+$ npm run build
+> civicpulse-frontend@0.1.0 build
+> tsc -b && vite build
+✓ 19 modules transformed.
+dist/index.html                  0.32 kB │ gzip:  0.23 kB
+dist/assets/index-vyTwY3O2.js  147.33 kB │ gzip: 47.78 kB
+✓ built in 78ms
+
+$ npm run typecheck
+> civicpulse-frontend@0.1.0 typecheck
+> tsc -b --noEmit
+(no output — clean)
+
+$ npm run lint
+> civicpulse-frontend@0.1.0 lint
+> eslint .
+(no output — clean)
+
+$ npm run test
+> civicpulse-frontend@0.1.0 test
+> vitest run
+
+ Test Files  4 passed (4)
+      Tests  13 passed (13)
+```
+(11 from the original Phase 9 suite + 2 new: HIT→"cached", MISS→"fresh". The pre-existing generic-aggregate test was extended, not replaced, to also assert `cacheState` never leaks into that list.)
+
+**Manual browser walkthrough** — same method as Phase 9's own As-Built (a real headless Chrome via Playwright, no interactive browser tool available in this session, disclosed rather than substituted silently), against the real `docker compose up -d --build` stack:
+
+```
+[STEP 0] Submitted a complaint (invalidates the stats cache per Phase 8).
+[STEP 1] Stats view immediately after a write: "Data: fresh"
+[STEP 2] Stats view revisited within the 30s TTL: "Data: cached"
+[STEP 3] "cacheState" leaking into the generic aggregate list: false
+```
+
+Matches the Plan's verification requirement exactly: a write forces a MISS (rendered "fresh"), the immediate revisit within the 30 s TTL is a HIT (rendered "cached"), matching `docs/specs/phase-08-cache-layer.md`'s own MISS→HIT sequence. The one scratch row (`location = 'XCache Verify Location'`) was deleted afterward; row count confirmed back at 36.
+
+**Deviations from the addendum's Plan:** none.
+
+**Three-failure-mode audit:** no silent decisions (the addendum's own text was followed exactly); no unverified claims (all output above is real); no scope beyond the four named files.

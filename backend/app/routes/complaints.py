@@ -2,18 +2,21 @@
 
 HTTP only: parse, validate, serialise, status codes. Every route here calls
 exactly one services/complaints.py function; NotFoundError/
-IllegalTransitionError are handled by the global handlers in
-app.exception_handlers, not caught here. The one exception is
+IllegalTransitionError/RateLimitExceededError are handled by the global
+handlers in app.exception_handlers, not caught here. The one exception is
 create_complaint(), which also records the two triage-specific Prometheus
 metrics (docs/specs/phase-07b-metrics.md) after calling the service —
 observability plumbing, not a business rule, so it stays here rather than
-in services/complaints.py (see that spec's Open Question 2).
+in services/complaints.py (see that spec's Open Question 2). Per
+docs/specs/phase-08-cache-layer.md's Plan correction, the fallback counter
+only increments on a live fallback (used_fallback and not cache_hit) — a
+triage-cache replay of an old fallback must not double-count it.
 """
 
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Query, Request, status
 
 from app.observability import TRIAGE_FALLBACK_TOTAL, TRIAGE_LATENCY_SECONDS
 from app.routes.dependencies import TriageProviderDep
@@ -23,18 +26,30 @@ from app.services import complaints as services
 router = APIRouter(prefix="/api/complaints", tags=["complaints"])
 
 
+def _resolve_client_ip(request: Request) -> str:
+    """X-Real-IP (nginx-set from $remote_addr, unspoofable from the
+    client) first, falling back to request.client.host for requests that
+    bypass nginx entirely (e.g. the test suite) — docs/specs/
+    phase-08-cache-layer.md, Open Question 1."""
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip
+    return request.client.host if request.client else "unknown"
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_complaint(
-    body: ComplaintCreateRequest, provider: TriageProviderDep
+    body: ComplaintCreateRequest, provider: TriageProviderDep, request: Request
 ) -> dict[str, Any]:
     created = await services.submit_complaint(
         provider,
         text=body.text,
         location=body.location,
         reporter_contact=body.reporter_contact,
+        client_ip=_resolve_client_ip(request),
     )
     TRIAGE_LATENCY_SECONDS.observe(created["triage_latency_ms"] / 1000)
-    if created["used_fallback"]:
+    if created["used_fallback"] and not created["cache_hit"]:
         TRIAGE_FALLBACK_TOTAL.inc()
     return created
 

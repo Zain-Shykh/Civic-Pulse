@@ -1,0 +1,91 @@
+@import "tailwindcss";
+
+/* docs/specs/phase-09c-visual-redesign.md's Plan §7. Light tokens are the
+   design brief's literal values; dark tokens use prefers-color-scheme only
+   (OQ5 — no manual toggle, no .dark class). */
+:root {
+  --background: #ffffff;
+  --surface: #f4f3f1;
+  --border: #dddad3;
+  --ink: #1a1a18;
+  --ink-secondary: #55534c;
+  --ink-muted: #8b887f;
+  --brand: #0e6379;
+  --emblem: #e8a33d;
+
+  --status-open: #2e4a73;
+  --status-in_progress: #8a5a1e;
+  --status-resolved: #29694a;
+  --status-rejected: #6b685f;
+  --priority-high: #a13a31;
+  --priority-normal: #6b685f;
+  --priority-low: #2e4a73;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #171613;
+    --surface: #201f1b;
+    --border: #38352d;
+    --ink: #efede7;
+    --ink-secondary: #c7c4bb;
+    --ink-muted: #9a968c;
+    --brand: #0a3540;
+    --emblem: #e8a33d;
+
+    --status-open: #6c8fc9;
+    --status-in_progress: #d9a054;
+    --status-resolved: #5fae81;
+    --status-rejected: #a6a296;
+    --priority-high: #d97a70;
+    --priority-normal: #a6a296;
+    --priority-low: #6c8fc9;
+  }
+}
+
+@theme inline {
+  --font-sans: "IBM Plex Sans", sans-serif;
+  --font-mono: "IBM Plex Mono", monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--ink);
+  --color-card: var(--background);
+  --color-card-foreground: var(--ink);
+  --color-popover: var(--background);
+  --color-popover-foreground: var(--ink);
+  --color-primary: var(--brand);
+  --color-primary-foreground: #ffffff;
+  --color-secondary: var(--surface);
+  --color-secondary-foreground: var(--ink);
+  --color-muted: var(--surface);
+  --color-muted-foreground: var(--ink-secondary);
+  --color-accent: var(--surface);
+  --color-accent-foreground: var(--ink);
+  --color-destructive: var(--priority-high);
+  --color-border: var(--border);
+  --color-input: var(--border);
+  --color-ring: var(--brand);
+
+  --color-emblem: var(--emblem);
+  --color-ink-muted: var(--ink-muted);
+  --color-status-open: var(--status-open);
+  --color-status-in_progress: var(--status-in_progress);
+  --color-status-resolved: var(--status-resolved);
+  --color-status-rejected: var(--status-rejected);
+  --color-priority-high: var(--priority-high);
+  --color-priority-normal: var(--priority-normal);
+  --color-priority-low: var(--priority-low);
+
+  --radius-sm: 0.125rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground font-sans;
+  }
+}

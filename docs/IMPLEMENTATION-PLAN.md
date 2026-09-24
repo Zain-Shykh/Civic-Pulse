@@ -89,6 +89,8 @@ Split into two sub-phases because they have genuinely different risk profiles:
 - No duplicated business rules (status transition table, category/priority lists) — render what the backend returns, per `PARALLEL-WORK-PLAN.md`'s constraint on this slice.
 - **Done looks like:** manual browser walkthrough — submit a complaint, see it appear on the dashboard, see stats update; `npm run build`/`typecheck`/`lint` all green (already true for the skeleton, must stay true).
 
+**Phase 9c — Visual redesign (added after Phase 9 shipped, not originally planned here):** a follow-up presentation-only restyle (Tailwind + shadcn/ui, a new Home view, typography/color tokens) on top of Phase 9's already-closed views and typed API client — no new endpoint, no data-layer change. See `docs/specs/phase-09c-visual-redesign.md`.
+
 ## Phase 10 — Docker/Compose hardening
 
 **Depends on:** Phases 3–9 producing the real images this hardens (resource limits, network segmentation, and healthchecks are already done in Phase 2 — this phase re-verifies them against the now-real app, not the walking skeleton, and closes anything deferred).

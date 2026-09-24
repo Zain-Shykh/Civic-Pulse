@@ -20,11 +20,11 @@ Team status: a specific person will probably join, but he has not started and th
 
 | Done | Item | Marks | Evidence/file |
 |---|---|---|---|
-| [ ] | Submit view: validation, honest loading state, renders category, priority, AI summary and provider | 5 | |
-| [ ] | Dashboard: pagination, filters, status transitions, server's 409 message surfaced verbatim | 5 | |
-| [ ] | Stats view rendering aggregates and cache-hit state from X-Cache | 3 | |
-| [ ] | Runtime configuration — no baked-in API URL; one image runs in any environment | 3 | |
-| [ ] | ≥5 meaningful component tests passing in CI | 2 | |
+| [x] | Submit view: validation, honest loading state, renders category, priority, AI summary and provider | 5 | `frontend/src/pages/Submit.tsx`; `docs/specs/phase-09-frontend-views.md`'s As-Built, walkthrough steps 1 and 4 — real 201 result and real 400 field-level errors both verified live against the compose stack via a real headless-Chrome session, not a mock. Restyled (Tailwind/shadcn) and re-verified live in `docs/specs/phase-09c-visual-redesign.md`'s As-Built, steps 3 and 6 — same behavior, new appearance. |
+| [x] | Dashboard: pagination, filters, status transitions, server's 409 message surfaced verbatim | 5 | `frontend/src/pages/Dashboard.tsx`; never precomputes legal transitions — always offers all four, always sends the PATCH. As-Built walkthrough steps 6–7: real 409 body (`current_status`/`attempted_status`) rendered inline, row's own status unchanged; real 200 updates the row in place. Restyled and re-verified live in `docs/specs/phase-09c-visual-redesign.md`'s As-Built, steps 8–10 — identical 409/200 outcomes with the new styling. |
+| [x] | Stats view rendering aggregates and cache-hit state from X-Cache | 3 | `frontend/src/pages/Stats.tsx` renders `GET /api/stats`'s aggregates generically; `X-Cache` is surfaced as a plain-language freshness indicator ("fresh"/"cached", not the raw header value — reasoning in `docs/specs/phase-09-frontend-views.md`'s Addendum). Verified live via a real browser: "fresh" immediately after a write, "cached" on the immediate revisit within the 30 s TTL, matching Phase 8's own MISS→HIT sequence. Restyled in `docs/specs/phase-09c-visual-redesign.md`; same aggregates rendering re-verified live, step 5. |
+| [x] | Runtime configuration — no baked-in API URL; one image runs in any environment | 3 | `docs/adr/0002-frontend-runtime-config.md` / `frontend/nginx.conf` (mechanism, pre-existing); this phase is the first to actually issue real fetches through it — `frontend/src/api/client.ts` never constructs anything but a relative `/api/...` path. Verified live: every call in the As-Built's walkthrough succeeded through nginx's proxy in the real compose stack. |
+| [ ] | ≥5 meaningful component tests passing in CI | 2 | Partial, honestly: 15 tests across 5 files (`frontend/tests/`, including `Home.test.tsx` added in `docs/specs/phase-09c-visual-redesign.md`), each exercising a real branch (400/409/429/network/200, plus Home's live-stats/navigation), pass locally — real output in that spec's As-Built. "In CI" can't be claimed yet: `.github/workflows/` is still just a README stub (no CI/CD exists at all — that's Phase 12's scope). Left unchecked until that phase actually wires this suite in. |
 
 ## C · Backend — 25
 
@@ -51,10 +51,10 @@ Team status: a specific person will probably join, but he has not started and th
 
 | Done | Item | Marks | Evidence/file |
 |---|---|---|---|
-| [ ] | /api/stats read-through cache, 30 s TTL, correct X-Cache header | 3 | |
-| [ ] | Cache invalidated on write, not left to expire | 2 | |
-| [ ] | Distributed Redis rate limiter on POST /api/complaints, 429 with Retry-After | 4 | |
-| [ ] | Redis AOF on a named volume, with your justification written down | 1 | |
+| [x] | /api/stats read-through cache, 30 s TTL, correct X-Cache header | 3 | `backend/app/providers/cache.py` (30s TTL), `backend/app/services/complaints.py::get_stats()`, `backend/app/routes/stats.py` (X-Cache header). Verified live 2026-09-23: `GET /api/stats` sequence `X-Cache: MISS` → `X-Cache: HIT` (identical data) — `docs/specs/phase-08-cache-layer.md`'s As-Built |
+| [x] | Cache invalidated on write, not left to expire | 2 | `backend/app/services/complaints.py` — `submit_complaint()`/`change_status()` both call `invalidate_stats_cache()`. Verified live: after a write, the very next `GET /api/stats` is `X-Cache: MISS` with the new complaint already counted, not stale-until-30s-expiry |
+| [x] | Distributed Redis rate limiter on POST /api/complaints, 429 with Retry-After | 4 | `backend/app/providers/cache.py::check_rate_limit()` (fixed-window INCR+EXPIRE, `docs/OPEN-DECISIONS.md` #7), `backend/app/services/exceptions.py::RateLimitExceededError`, `backend/app/exception_handlers.py`. Verified live: 10 requests (RATE_LIMIT_MAX) succeed, 11th returns 429 with a numeric `Retry-After: 60` header |
+| [ ] | Redis AOF on a named volume, with your justification written down | 1 | Mechanism already present (`compose.yaml`'s `redis` service, `--appendonly yes` on `redisdata`, since Phase 2) but the "why does a cache need a volume" justification CONTRACTS.md asks for isn't written anywhere yet — out of this phase's scope, not decided here |
 
 ## F · AI layer — 25
 

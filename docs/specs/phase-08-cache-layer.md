@@ -1,0 +1,694 @@
+# Phase 8: Cache layer
+Status: done
+Depends on: Phase 7 (routes must exist to wrap), Phase 7b (carries forward its Open Question 3)
+Reads first: docs/CONTRACTS.md §2.4 and §2.5 requirement 5, docs/OPEN-DECISIONS.md #7, docs/specs/phase-07b-metrics.md (Open Question 3), backend/app/providers/cache.py, frontend/nginx.conf
+
+## Goal
+
+Build the three real Redis responsibilities on top of `providers/cache.py`'s
+existing connection factory: a read-through cache for `GET /api/stats`
+(§2.4 Job 1), a distributed fixed-window rate limiter in front of
+`POST /api/complaints` (§2.4 Job 2), and a content-hash triage-result cache
+(§2.5 requirement 5) so a repeated complaint costs one Gemini call, not N.
+All three are Redis calls behind `providers/cache.py`, invoked from
+`services/complaints.py` — the same shape `LLMTriage` already follows for
+its own external call — never from `routes/`.
+
+## Scope-gap note (found during research, not silently absorbed)
+
+`docs/IMPLEMENTATION-PLAN.md`'s Phase 8 bullet list names only two
+responsibilities: "`/api/stats` read-through caching + invalidation" and
+"Redis-backed fixed-window rate limiter." It omits the triage-result cache
+entirely. But:
+
+- `docs/CONTRACTS.md` §2.5 requirement 5 requires it explicitly: "Cache by
+  content hash in Redis, 24 h TTL — duplicate complaints cost one
+  inference, not N. Measured hit rate must be reported."
+- `backend/app/providers/triage/llm.py`'s own docstring already says so:
+  "Content-hash caching (requirement 5) is explicitly deferred to Phase 8."
+- `backend/app/providers/cache.py`'s own docstring already says so too:
+  "The stats cache, rate limiter, and triage-result cache built on top of
+  this client arrive in the Cache Layer phase."
+
+So three of three sources that actually describe this phase's Redis work
+(`CONTRACTS.md`, `llm.py`, `cache.py`) already agree on three
+responsibilities — only `IMPLEMENTATION-PLAN.md`'s summary bullet list is
+short one. Treated as a stale summary, not a scope decision: all three are
+in scope for this spec.
+
+## Deliverables
+
+**(a) Stats read-through cache — `docs/CONTRACTS.md` §2.4 Job 1**
+
+- `providers/cache.py` gains a small get/set/delete surface for a single
+  key, `stats:aggregate` (`/api/stats` takes no query params today, so one
+  key is the whole cache — confirmed against `routes/stats.py`'s current
+  shape).
+- `services/complaints.py`'s `get_stats()` checks the cache first; on a
+  miss, computes via `repository.stats_summary()` (unchanged) and writes
+  the result back with a 30 s TTL. Returns `(data, hit: bool)` rather than
+  `data` alone — `routes/stats.py` reads the flag and sets `X-Cache:
+  HIT|MISS`, the same "service returns metadata, route turns it into an
+  HTTP header" shape Phase 7b's `used_fallback` already established.
+- Invalidation: any write that changes what `stats_summary()` aggregates
+  (`counts_by_status`, `counts_by_category`, `average_triage_latency_ms`)
+  deletes the `stats:aggregate` key. Concretely: `submit_complaint()`
+  (changes category counts + average latency) and `change_status()`
+  (changes status counts) both invalidate — see Open Questions for
+  confirmation this is the full write set.
+
+**(b) Rate limiter — `docs/CONTRACTS.md` §2.4 Job 2**
+
+- Algorithm: fixed-window `INCR` + `EXPIRE`, per `docs/OPEN-DECISIONS.md`
+  #7 (already resolved — not relitigated here).
+- `providers/cache.py` gains a function that increments a per-IP,
+  per-window counter and returns whether the caller is over the limit and,
+  if so, the window's remaining TTL (for `Retry-After`).
+- Applies to `POST /api/complaints` only — `CONTRACTS.md`'s own Job 2 text
+  names exactly that one route ("protecting POST /api/complaints"), no
+  others.
+- New `RateLimitExceededError` in `services/exceptions.py`, carrying
+  `retry_after_seconds`, following the exact existing shape of
+  `NotFoundError`/`IllegalTransitionError` (data only, no HTTP knowledge) —
+  handled by a new global handler in `exception_handlers.py` returning 429
+  + `Retry-After`, registered in `main.py` alongside the other two.
+- `services/complaints.py`'s `submit_complaint()` gains a `client_ip: str`
+  parameter, checks the limiter before calling the triage provider, and
+  raises `RateLimitExceededError` on an exceeded window.
+  `routes/complaints.py`'s `create_complaint()` resolves the client IP
+  from the request (see Open Question 1) and passes it through — the
+  route does IP resolution (an HTTP-layer fact), the service enforces the
+  quota rule (a business rule), the provider does the Redis `INCR`
+  (infrastructure). No Redis import in `routes/` or in `services/`.
+
+**(c) Triage-result cache — `docs/CONTRACTS.md` §2.5 requirement 5**
+
+- Key: SHA-256 of `text` + `location` together, not `text` alone —
+  `TriageProvider.triage(text, location)` takes both as input, so both
+  determine the result; hashing `text` only would serve a stale cached
+  result for the same complaint text reported at a different location.
+- `providers/cache.py` gains get/set for this namespace, 24 h TTL, plus two
+  plain Redis counters (`triage_cache:hits`, `triage_cache:misses`, no
+  TTL, cumulative) so hit rate is measurable without polluting the public
+  complaint response with cache bookkeeping.
+- `services/complaints.py`'s `submit_complaint()` checks the cache before
+  calling `provider.triage(...)`; a hit skips the provider call entirely
+  and increments the hit counter, a miss calls the provider as today,
+  caches the result, and increments the miss counter.
+- Hit-rate reporting: see Open Question 4 — no new endpoint invented.
+
+## Non-goals
+
+- No change to `/metrics`'s own behavior beyond the exemption decision in
+  Open Question 3 (Phase 7b already shipped the endpoint itself).
+- No change to the rate-limiter algorithm — fixed-window is already
+  decided (`docs/OPEN-DECISIONS.md` #7).
+- No token-bucket limiter, no per-user limiting — per-IP only, per
+  `CONTRACTS.md`'s literal text.
+- No caching of anything other than the three named pieces (no caching
+  `GET /api/complaints/{id}` or the list endpoint — not required by
+  `CONTRACTS.md` and not asked for).
+
+## Open Questions
+
+**1. Client IP behind the nginx proxy. — RESOLVED 2026-09-22**
+Checked `frontend/nginx.conf` directly: it already sets both
+`X-Forwarded-For: $proxy_add_x_forwarded_for` and `X-Real-IP:
+$remote_addr` on every proxied request to `backend`. So the data is
+already there — the question is which one to trust and how.
+`$proxy_add_x_forwarded_for` *appends* nginx's own view of the caller to
+whatever `X-Forwarded-For` value (if any) the caller already sent — so a
+malicious client could pre-set that header to spoof an IP and evade the
+per-IP limiter by rotating a claimed value, unless the backend reads the
+**last** entry in the list (the one nginx itself appended) rather than the
+first (attacker-controlled). Recommendation: read `X-Real-IP` — nginx
+sets it from `$remote_addr` directly, so it can't be client-forged — with
+a fallback to `request.client.host` only if the header is absent (e.g. a
+direct test-client request bypassing nginx entirely, as in the test
+suite). Since `backend` publishes no host port (`docs/OPEN-DECISIONS.md`
+#11), nginx is the only path a real external request can take today; this
+assumption is worth revisiting if Kubernetes (Phase 11) puts a second
+proxy hop in front of nginx, but that's not decided here.
+
+**2. What counts as "a write that changes the aggregate" for stats
+invalidation. — RESOLVED 2026-09-22**
+`stats_summary()`'s three fields (`counts_by_status`,
+`counts_by_category`, `average_triage_latency_ms`) are changed by both
+complaint creation (category count, average latency) and status changes
+(status count) — no other write path exists today. Recommendation:
+invalidate on both `submit_complaint()` and `change_status()`. Flagging
+for confirmation since it's a completeness claim about "every write that
+touches this data," not just a technical detail.
+
+**3. Should `GET /metrics` be exempted from the rate limiter?
+(Phase 7b's Open Question 3, inherited here.) — RESOLVED 2026-09-22**
+Re-reading `CONTRACTS.md` §2.4 Job 2's literal text: "protecting
+**POST /api/complaints**" — the limiter is scoped to that one route by
+the contract's own wording, not to the app as a whole. Under Deliverable
+(b) above, the limiter is never invoked from any other route, `/metrics`
+included. Recommendation: treat this as already resolved by reading the
+contract precisely, rather than as a live exemption decision — there is
+no rate-limiting anywhere for an exemption to be carved out of. Flagging
+for explicit confirmation since this closes out a question carried across
+two phases now.
+
+**4. Rate-limit threshold — request count and window length. — DECIDED 2026-09-22: 10 req / 60 s**
+`CONTRACTS.md` requires the mechanism (fixed-window, 429 +
+`Retry-After`) but names no specific N-requests-per-T-seconds value, and
+neither does any other doc read for this spec. Recommendation: 10
+requests per 60-second window per IP, configurable via a
+`RATE_LIMIT_MAX`/`RATE_LIMIT_WINDOW_SECONDS` env var pair (defaults
+10/60) rather than a hardcoded magic number — loosely sized against the
+free-tier Gemini quota this limiter exists to protect (~15 RPM total,
+`docs/OPEN-DECISIONS.md` #1), leaving headroom for more than one
+legitimate citizen submitting at once. This is a genuine value judgment,
+not derivable from any doc — needs an explicit decision, not just a
+rubber-stamp.
+
+**5. How measured triage-cache hit rate gets surfaced. — RESOLVED 2026-09-22**
+`CONTRACTS.md` requires it "reported" but doesn't say where, and no new
+endpoint exists in the contract's nine-row table to invent one for.
+Recommendation: add a `triage_cache_hit_rate` field (hits / (hits +
+misses), `null` if no lookups yet) to `GET /api/meta/providers`'s
+existing response — that route is already described in `CONTRACTS.md` as
+"your observability surface," and it already reports triage outcomes; a
+cache-hit-rate field is a natural extension of the same surface, not a
+new one. Flagging explicitly since it extends an already-shipped
+endpoint's response shape, the same discipline Phase 7b's Open Question 2
+required before touching `routes/complaints.py`.
+
+## Plan
+
+All five Open Questions above are decided (see inline `RESOLVED`/`DECIDED`
+tags, 2026-09-22). Implementing exactly against those decisions — no
+re-litigation.
+
+### Files touched, in order
+
+Dependency order, not the (a)/(b)/(c) Deliverables grouping — several files
+are touched once but serve more than one deliverable, which is why the
+order below doesn't map 1:1 onto the lettered list.
+
+1. **`backend/app/config.py`** — add `rate_limit_max: int = 10` and
+   `rate_limit_window_seconds: int = 60` to `Settings`, overridable via
+   `RATE_LIMIT_MAX`/`RATE_LIMIT_WINDOW_SECONDS` env vars (pydantic-settings
+   reads the field name upper-cased automatically, matching
+   `database_url`/`redis_url`/`gemini_api_key`'s existing pattern — no new
+   config mechanism introduced). Touched first: everything downstream that
+   reads these defaults needs the field to exist.
+
+2. **`backend/app/providers/cache.py`** — the one file every deliverable
+   depends on. Touched second, before anything that calls it. Full new
+   surface (exact signatures below), plus one change to the existing
+   `client` construction line: `redis.from_url(settings.redis_url,
+   decode_responses=True)` — checked directly, the current line has no
+   `decode_responses`, so `client.get(...)` returns `bytes` today; every
+   new function below assumes `str` back from Redis, so this one-line
+   change is a prerequisite, not an incidental drive-by edit.
+
+3. **`backend/app/services/exceptions.py`** — add `RateLimitExceededError`,
+   matching `NotFoundError`/`IllegalTransitionError`'s exact existing shape
+   (constructor stores the data a handler needs, calls `super().__init__`
+   with a message, no HTTP knowledge). Touched third: `exception_handlers.py`
+   and `services/complaints.py` both need the class to exist first.
+
+4. **`backend/app/exception_handlers.py`** — add
+   `rate_limit_exceeded_handler`, same shape as the two existing handlers
+   (`assert isinstance(exc, RateLimitExceededError)`, build a `JSONResponse`
+   with `status_code=429` and a `Retry-After` header). Touched fourth, right
+   after the exception it maps.
+
+5. **`backend/app/services/complaints.py`** — the business-logic wiring for
+   all three deliverables in one file:
+   - `get_stats()` — cache-aside read, returns `(data, hit: bool)`.
+   - `change_status()` — invalidates `stats:aggregate` after a successful
+     status write.
+   - `submit_complaint()` — gains a `client_ip: str` keyword parameter;
+     checks the rate limiter first (raises `RateLimitExceededError` before
+     touching the triage provider or the repository at all); then checks
+     the triage-result cache before calling `provider.triage(...)`; then
+     invalidates `stats:aggregate` after a successful create (same as
+     today's create path, now also touching the cache). Return value
+     gains a second new field alongside `used_fallback`: **`cache_hit:
+     bool`** (correction, 2026-09-23 — see "On a cache hit" below),
+     `True` only when this call's triage result came from the triage
+     cache, independent of whether that result happens to be a fallback.
+   - `get_meta_providers()` — adds `triage_cache_hit_rate` to its returned
+     dict.
+   Touched fifth: needs `cache.py` (step 2) and the new exception (step 3)
+   to exist first.
+
+6. **`backend/app/routes/complaints.py`** — `create_complaint()` resolves
+   the client IP (`request.headers.get("x-real-ip") or request.client.host
+   if request.client else "unknown"`) and passes it to
+   `services.submit_complaint(..., client_ip=...)`.
+   `RateLimitExceededError` is raised inside the service call, before
+   `create_complaint()`'s own metrics lines ever run, and is caught by the
+   global handler (step 4), not by this route.
+   **Correction, 2026-09-23:** this route's existing
+   `TRIAGE_FALLBACK_TOTAL` increment (Phase 7b) is *not* left unchanged as
+   originally stated here — it's now gated:
+   `if created["used_fallback"] and not created["cache_hit"]:
+   TRIAGE_FALLBACK_TOTAL.inc()`, so a triage-cache replay of an old
+   fallback never increments the live-health counter a second time. The
+   docstring rider Phase 7b added to this route needs a one-clause update
+   to say so.
+   Touched sixth: needs `submit_complaint()`'s new signature (step 5) to
+   exist first.
+
+7. **`backend/app/routes/stats.py`** — `get_stats()` unpacks
+   `(data, hit)` from the service call and returns a `Response` with the
+   `X-Cache` header set (`"HIT"` if `hit` else `"MISS"`) — same shape as
+   any other FastAPI route that needs to set a header, no new pattern.
+   Touched seventh: needs `services.get_stats()`'s new return shape (step 5).
+
+8. **`backend/app/main.py`** — register
+   `app.add_exception_handler(RateLimitExceededError,
+   rate_limit_exceeded_handler)` alongside the other two. Touched last:
+   needs the handler (step 4) to exist.
+
+**Test files** (mechanical updates and new scenarios — see Verification
+required below for the scenarios themselves):
+
+9. `backend/tests/test_services_complaints.py` — existing direct calls to
+   `submit_complaint()` (three call sites, per the Phase 7b As-Built)
+   updated to pass `client_ip="10.0.0.1"` (or similar fixed test IP) —
+   mechanical, required by step 5's new parameter, not a new test
+   scenario. Plus one new test (triage-cache call-counting).
+10. `backend/tests/test_routes_complaints.py` — existing `client` fixture
+    given a fixed `X-Real-IP` default (see "Test isolation for the rate
+    limiter" below); one new test class for the 429 scenario.
+11. `backend/tests/test_routes_stats.py` — new file.
+12. `backend/tests/test_providers_cache.py` — new file.
+
+### `providers/cache.py` — exact new signatures
+
+```python
+import hashlib
+import json
+import time
+from typing import Any
+
+# --- stats cache (Deliverable a) ---
+_STATS_KEY = "stats:aggregate"
+_STATS_TTL_SECONDS = 30
+
+async def get_stats_cache() -> dict[str, Any] | None: ...
+async def set_stats_cache(data: dict[str, Any]) -> None: ...
+async def invalidate_stats_cache() -> None: ...
+
+# --- rate limiter (Deliverable b) ---
+async def check_rate_limit(
+    client_ip: str, *, max_requests: int, window_seconds: int
+) -> tuple[bool, int]:
+    """Fixed-window INCR+EXPIRE, keyed by client_ip and the current window
+    bucket (`int(time.time()) // window_seconds`). Returns
+    (allowed, retry_after_seconds) — retry_after_seconds is the window
+    key's remaining TTL when not allowed, 0 when allowed."""
+    ...
+
+# --- triage-result cache (Deliverable c) ---
+_TRIAGE_TTL_SECONDS = 24 * 60 * 60
+
+def _triage_cache_key(text: str, location: str) -> str:
+    """SHA-256 of text+location together (both inputs to
+    TriageProvider.triage(), per Deliverable c's key-composition note)."""
+    ...
+
+async def get_triage_cache(text: str, location: str) -> dict[str, Any] | None: ...
+async def set_triage_cache(text: str, location: str, result: dict[str, Any]) -> None: ...
+async def record_triage_cache_hit() -> None: ...
+async def record_triage_cache_miss() -> None: ...
+async def triage_cache_hit_rate() -> float | None:
+    """hits / (hits + misses); None if no lookups have happened yet."""
+    ...
+```
+
+`get_stats_cache`/`get_triage_cache` store/load via `json.dumps`/
+`json.loads` against plain `dict`s — `set_triage_cache` is given
+`result.model_dump(mode="json")` (a `TriageResult`'s enum fields become
+plain strings), and a hit is reconstructed via
+`TriageResult.model_validate(cached)` in `services/complaints.py` so the
+rest of `submit_complaint()` treats a cache hit identically to a fresh
+provider call or a fallback — one `TriageResult` variable regardless of
+which of the three paths produced it, matching the existing fallback
+branch's own shape.
+
+**Correction, 2026-09-23:** no new `cache.py` function is needed for the
+`cache_hit`/live-fallback distinction described above —
+`get_triage_cache(text, location)` already returns `dict | None`
+(unchanged from the signature above), and its caller in
+`services/complaints.py` already knows whether that call returned
+something. `cache_hit` is derived at the call site
+(`cached = await get_triage_cache(...); cache_hit = cached is not None`),
+not inside `providers/cache.py`.
+
+**On a cache hit,** `triage_latency_ms` is still measured as this
+request's own elapsed time around the triage step (the cache lookup, not
+the original provider call) — the metric's meaning stays "time this
+request spent in the triage step," whichever path it took, consistent
+with how `TRIAGE_LATENCY_SECONDS` is already documented in
+`observability.py`. `triaged_by` is preserved verbatim from the cached
+result (e.g. still `"llm:gemini"`) — a cache hit changes *cost*, not
+*attribution*.
+
+> **Correction, 2026-09-23 — the sentence originally here was wrong.**
+> It claimed `used_fallback`'s existing derivation
+> (`triaged_by == "rules:fallback"`) "needs no change" on a cache hit.
+> That's overturned: `used_fallback`'s own derivation and meaning are
+> unchanged (still exactly `triaged_by == "rules:fallback"`, still what
+> gets persisted and what `/api/meta/providers`'s `recent_outcomes`
+> reports) — but a *second*, new field is needed alongside it, because
+> `TRIAGE_FALLBACK_TOTAL` must **not** increment on a cache-replayed
+> fallback, only on a live one.
+>
+> **Why:** `TRIAGE_FALLBACK_TOTAL`'s purpose is a live Gemini-health
+> signal — something to alert on. "How many stored complaints ended up
+> rules-triaged" is always answerable later by a direct query against
+> `triaged_by`, independent of any live counter. If a cache replay of an
+> old fallback kept incrementing the counter, it would stay elevated for
+> up to 24h (the triage-cache TTL) after Gemini actually recovered —
+> actively misleading for anyone watching it operationally.
+>
+> **Mechanism:** `submit_complaint()`'s return value gains a second field,
+> `cache_hit: bool` — whether *this call* was served from the triage
+> cache, independent of `used_fallback`. `get_triage_cache(...)` already
+> returns `dict | None` (step 2's signature, unchanged — no new function
+> needed there, the caller already knows whether it got something back);
+> `services/complaints.py` sets `cache_hit = cached is not None` at the
+> point it calls `get_triage_cache`. `routes/complaints.py`'s
+> `create_complaint()` then increments `TRIAGE_FALLBACK_TOTAL` only when
+> `used_fallback is True and cache_hit is False` — a live fallback, not a
+> replayed one. `used_fallback` alone (persistence, `/api/meta/providers`)
+> is completely unaffected by this change.
+
+### Test isolation for the rate limiter
+
+Every test that POSTs to `/api/complaints` through a shared `TestClient`
+now shares one `request.client.host` (`"testclient"`, Starlette's TestClient
+default) unless something overrides it — meaning, un-addressed, every
+existing HTTP-level create test across `test_routes_complaints.py` and
+`test_routes_metrics.py` would silently share one 10-req/60s bucket with
+the new rate-limit test, causing spurious 429s in unrelated tests the
+moment the suite's cumulative POST count crosses 10 within a minute. This
+is a real correctness risk this Plan has to close, not an incidental
+detail:
+
+- `test_routes_complaints.py`'s existing `client` fixture gains a fixed
+  `headers={"X-Real-IP": "10.0.0.1"}` default (httpx's `TestClient`
+  supports default headers at construction) — every existing test in that
+  file now resolves to the same fixed, harmless IP, distinct from the
+  rate-limit test's own IP below.
+- `test_routes_metrics.py`'s `client` fixture gets its own distinct fixed
+  IP (`10.0.0.2`) for the same reason — it also POSTs to
+  `/api/complaints`.
+- The new rate-limit test in `test_routes_complaints.py` uses a third,
+  dedicated IP (`10.0.0.3`) local to that test only, and explicitly
+  deletes any `ratelimit:10.0.0.3:*` keys via a direct `cache.client.keys()`
+  + `delete()` call in a `finally` block, so a re-run of the suite within
+  the same 60 s window doesn't inherit a stale count.
+
+### Four-layer rule — confirmed per deliverable, not just asserted
+
+- **(a) Stats cache:** `redis`/`cache` is imported only in
+  `providers/cache.py`. `services/complaints.py` imports
+  `app.providers.cache` functions, never `redis` directly.
+  `routes/stats.py` imports neither — it reads a `(dict, bool)` tuple back
+  from the service call and sets a plain HTTP header from the `bool`.
+- **(b) Rate limiter:** same import boundary. `routes/complaints.py` adds
+  no cache/Redis import at all — it extracts a plain `str` (the IP) from
+  `Request` (already an HTTP-layer object it already has access to) and
+  passes it as a string parameter to a service function, exactly like it
+  already passes `body.text`/`body.location`. The Redis `INCR` happens
+  only inside `providers/cache.py`, called from `services/complaints.py`.
+- **(c) Triage cache:** identical boundary — `routes/complaints.py` is
+  entirely unaware the cache exists; `submit_complaint()`'s public
+  contract (parameters in, dict out) is unchanged by adding the cache
+  check internally.
+
+### Still uncertain (not manufactured certainty)
+
+- **redis-py's exact `TTL` return values on edge cases** (key expired
+  mid-check, key exists with no TTL) — `check_rate_limit`'s `retry_after`
+  needs `max(ttl, 0)` defensively, but the precise `-1`/`-2` semantics
+  should be confirmed empirically against the real `redis:7-alpine`
+  instance during implementation, not assumed from memory of the redis-py
+  API.
+- **Fixed-window boundary bursts** (a client landing requests just before
+  and just after a window boundary can briefly exceed the nominal rate) —
+  this is an accepted, known property of the fixed-window algorithm itself
+  (`docs/OPEN-DECISIONS.md` #7 already chose it over token-bucket for
+  simplicity, accepting this trade-off), not a new gap introduced here.
+- **Whether 10 req/60s is comfortable for the full test suite's own
+  traffic** — addressed via the fixed test IPs above, but if a future test
+  file adds more HTTP-level complaint-creation tests without adopting the
+  same fixed-IP convention, it could reintroduce the collision risk this
+  Plan just closed. Worth a one-line comment at each fixture, not a
+  structural guarantee.
+
+## Verification required
+
+- `ruff check .` and `mypy app` — verbatim output, both clean (restating
+  project convention, not a new requirement).
+- Full `pytest` run — verbatim tail, real pass count.
+- **`backend/tests/test_providers_cache.py` (new):** direct exercises of
+  `providers/cache.py` against real Redis (no HTTP, no mocks, matching
+  `test_repositories.py`'s precedent for direct provider/repository-level
+  tests): stats get/set/delete round-trip and TTL; `check_rate_limit`
+  under the threshold (allowed) and at/over it (blocked, `retry_after > 0`);
+  triage-cache get/set round-trip; hit/miss counters and
+  `triage_cache_hit_rate`'s arithmetic, including the `None`-when-empty
+  case.
+- **`backend/tests/test_routes_complaints.py` (extended):** new
+  `TestRateLimiting` class — drive `RATE_LIMIT_MAX` (10) requests from the
+  dedicated test IP, assert all succeed, then assert the next one returns
+  `429` with a `Retry-After` header present and numeric. Cleans up every
+  created row and the Redis key(s) it used, per the isolation section
+  above.
+- **`backend/tests/test_routes_stats.py` (new):** `GET /api/stats`
+  sequencing test — invalidate/clear the cache first, assert the first
+  call is `X-Cache: MISS`, assert the immediately-following call is
+  `X-Cache: HIT` with identical data, then `POST /api/complaints`, then
+  assert the very next `GET /api/stats` is `X-Cache: MISS` again *and* its
+  data reflects the new complaint (proves invalidation-on-write, not just
+  eventual TTL expiry — the spec's explicit requirement).
+- **New, 2026-09-23 — `backend/tests/test_routes_metrics.py` (extended):**
+  proves the live-fallback-vs-cache-replay distinction from the
+  correction above. Using `SimulatedTriage(always_raise=True)` and a
+  fixed `text`+`location`: POST once, read `GET /metrics`, assert
+  `triage_fallback_total`'s delta is `+1` (a live fallback — matches
+  Phase 7b's existing test, unchanged). Then POST the exact same
+  `text`+`location` a second time (now a triage-cache hit, still
+  persisting `triaged_by == "rules:fallback"` on the row), read
+  `GET /metrics` again, and assert this second delta is `0`, not `+1` —
+  the counter must not move on a cache replay even though the replayed
+  complaint's own `triaged_by` still honestly says `rules:fallback`.
+  Cleans up both created rows.
+- **`backend/tests/test_services_complaints.py` (extended):** the three
+  existing `submit_complaint()` call sites updated for the new
+  `client_ip` parameter (no behavior change, confirm they still pass);
+  one new test wrapping `SimulatedTriage` in a call-counting spy, POSTing
+  (calling `submit_complaint()` directly) the same `text`+`location` twice,
+  asserting the spy's `triage()` was invoked exactly once and both results
+  carry identical category/priority/summary/`triaged_by`.
+
+## Ambiguity handling
+Open Questions 1–5 above are the ambiguities found; none silently
+resolved. Everything else in `CONTRACTS.md` §2.4/§2.5 requirement 5 read
+as unambiguous given the codebase state checked.
+
+## As-Built
+
+Implemented exactly against the approved Plan (`2fc23ea`, corrected
+`d1596b9`) — all five Open Questions applied as decided, the
+`cache_hit`/live-fallback correction applied as decided, the eight source
+files touched in the Plan's stated order, plus the four test files the
+Plan named (`test_services_complaints.py`, `test_routes_complaints.py`,
+`test_routes_stats.py`, `test_providers_cache.py`) and the fifth
+(`test_routes_metrics.py`) the correction's own new Verification-required
+scenario already anticipated. `pyproject.toml` has no diff from the
+approved Plan's starting point (see Deviation 1's note below on a change
+made and then reverted).
+
+### Deviation 1 — cross-event-loop Redis client crash, found and fixed
+
+Every HTTP-level test that both called `cache.*` directly (e.g. to seed or
+flush state) and made a request through `TestClient` started crashing with
+`RuntimeError: ... attached to a different loop`, or (once partially
+masked) silently produced wrong values (`assert (0.0 - 0.0) == 1`).
+
+**Root cause, confirmed by isolating the failure:** running a failing test
+alone (`pytest tests/test_routes_metrics.py::TestMetricsEndpoint::test_fallback_counter_increments_on_provider_that_always_raises`)
+produced a *different*, non-crashing failure — proving the crash was a
+cross-test artifact, not a bug in that test alone. Each `TestClient(app)`
+instance runs the ASGI app inside its own `anyio` portal **thread**, with
+its own event loop, separate from the loop pytest itself runs the test
+function's body on. `providers/cache.py`'s original design — one
+module-level `client = redis.from_url(...)`, created once — can only be
+validly used from the single loop that first opened its socket; asyncio
+transports cannot cross loops. Two things tried and rejected before
+finding the real fix, kept here for the audit trail:
+- Setting `asyncio_default_test_loop_scope = "session"` in
+  `pyproject.toml` (one shared loop for all *test bodies*) fixed
+  direct-call-only tests but not tests mixing direct calls with HTTP
+  calls, since a `TestClient`'s own portal loop is *always* a separate
+  thread regardless of pytest's own loop scope. Reverted — no diff
+  remains in `pyproject.toml`.
+- Rebuilding/discarding the client at each FastAPI lifespan
+  startup/shutdown (mirroring how `app.state.triage_provider` is
+  constructed) fixed cross-`TestClient` reuse but not a single test that
+  also calls `cache.*` directly from its own body — that call runs on a
+  *third* loop (pytest's), still mismatched against whichever portal last
+  reconnected the client. Also reverted.
+- Disabling redis-py 8.x's maintenance-notifications feature
+  (`MaintNotificationsConfig(enabled=False)`) was tried as a hypothesis
+  (its background handler looked loop-affine) and had no effect — ruled
+  out, not shipped.
+
+**Real fix, shipped:** `providers/cache.py` keeps one Redis client **per
+currently-running event loop** (a `weakref.WeakKeyDictionary` keyed by the
+loop object, resolved by a private `_client_for_current_loop()`), so a
+test's own body (pytest's loop) and each `TestClient`'s portal thread
+(its own loop) each transparently get their own connection to the same
+physical Redis server — a legitimate, ordinary multi-connection scenario,
+not a race. A module-level `__getattr__` (PEP 562) keeps `cache.client`
+working as a plain attribute for every existing call site (both
+`providers/cache.py`'s own functions and every test file that references
+it directly) without changing any of them. Production is unaffected: one
+process has exactly one event loop for its whole life, so this is
+functionally the same single persistent client as before.
+
+### Deviation 2 — two pre-existing Phase 7b tests broke against a clean cache
+
+Once Deviation 1's fix removed the crash, two **pre-existing** tests still
+failed on a real assertion:
+`test_routes_complaints.py::TestMandatoryDeterminism::test_provider_that_always_raises_still_returns_201`
+and
+`test_routes_metrics.py::TestMetricsEndpoint::test_fallback_counter_increments_on_provider_that_always_raises`.
+
+**Root cause:** both reused generic filler text (`_create_payload()`'s
+default, and `"A" * 20 + "Test Location"` respectively) that an *earlier*
+test in the same run had already submitted successfully (non-fallback).
+Phase 8's triage-result cache — working exactly as designed — checks the
+cache *before* ever calling the provider, so the always-raising override
+in these two tests was never actually exercised; the cached, earlier
+non-fallback result was replayed instead. This is not a caching bug: two
+identical `(text, location)` pairs are contractually supposed to produce
+one shared result (`CONTRACTS.md` §2.5 requirement 5). It's a hidden
+assumption in two pre-existing tests — "every POST re-triages fresh" —
+that Phase 8 legitimately breaks. Fixed by giving each test its own
+unique text, the same discipline this phase's own new tests already
+followed. No assertion, intent, or scenario in either test changed.
+
+### Deviation 3 — new file beyond the Plan's list: `backend/tests/conftest.py`
+
+A session-scoped, autouse fixture that flushes the whole test Redis
+database once before any test runs. Necessitated by the same class of
+issue as Deviation 2, one level up: Redis data physically persists across
+*separate* `pytest` invocations (confirmed directly — a stale
+`triage:<hash>` key from an earlier debugging run was still present with
+a live TTL when checked), unlike Postgres's idempotent seed script. Fixing
+only the two tests' payloads (Deviation 2) would not have protected
+against a *previous run's* leftover cache entries contaminating the next
+one. Test-only, 20 lines, no production code path touches it — disclosed
+here explicitly since it is a real file the Plan's list did not name.
+
+### Verification — real output, pasted in full
+
+`ruff check .`:
+```
+All checks passed!
+```
+
+`mypy app`:
+```
+Success: no issues found in 31 source files
+```
+
+Full suite, run twice for determinism (no `time.sleep()`, no flaky
+ordering):
+```
+======================= 164 passed, 2 warnings in 1.99s ========================
+======================= 164 passed, 2 warnings in 2.07s ========================
+```
+
+Targeted run of every new/extended test this phase added:
+```
+tests/test_routes_complaints.py::TestRateLimiting::test_exceeding_the_window_returns_429_with_retry_after PASSED
+tests/test_routes_stats.py::TestStatsCache::test_miss_then_hit_then_invalidated_on_write PASSED
+tests/test_services_complaints.py::TestTriageResultCache::test_second_identical_complaint_does_not_reinvoke_provider PASSED
+tests/test_routes_metrics.py::TestLiveFallbackVsCacheReplay::test_cache_replay_of_a_fallback_does_not_double_count PASSED
+tests/test_providers_cache.py::TestStatsCache::test_get_set_delete_round_trip_and_ttl PASSED
+tests/test_providers_cache.py::TestRateLimiter::test_allows_up_to_max_then_blocks_with_positive_retry_after PASSED
+tests/test_providers_cache.py::TestTriageResultCache::test_get_set_round_trip_and_ttl PASSED
+tests/test_providers_cache.py::TestTriageResultCache::test_hit_rate_reflects_this_test_s_own_delta PASSED
+tests/test_providers_cache.py::TestTriageResultCache::test_hit_rate_is_none_when_no_lookups_recorded PASSED
+======================== 9 passed, 2 warnings in 0.81s =========================
+```
+
+Manual, real-value verification against the live app (`TestClient`, real
+Postgres + Redis, `RATE_LIMIT_MAX=10`) — every number below is pasted from
+an actual run, not asserted:
+
+Rate limiter — 10 allowed, 11th blocked:
+```
+request 1: status=201
+request 2: status=201
+...
+request 10: status=201
+request 11 (over limit): status=429 Retry-After=60
+```
+
+Stats cache — MISS, then HIT (identical data), then MISS again with the
+new complaint counted (proves invalidation-on-write, not TTL expiry):
+```
+1st GET /api/stats: X-Cache=MISS open_count=36
+2nd GET /api/stats: X-Cache=HIT  open_count=36
+3rd GET /api/stats (after write): X-Cache=MISS open_count=37
+```
+
+Triage-result cache — a call-counting wrapper around the provider, two
+identical submissions:
+```
+provider.triage() call count after 2 identical submissions: 1
+first:  cache_hit=False triaged_by=simulated
+second: cache_hit=True  triaged_by=simulated
+```
+
+Live fallback vs. cache replay — the Plan's correction, proven with real
+deltas:
+```
+before: 0.0
+after live fallback (delta=1.0): 1.0   [triaged_by=rules:fallback cache_hit=False]
+after cache-replay (delta=0.0): 1.0    [triaged_by=rules:fallback cache_hit=True]
+```
+
+A one-off cleanup bug in my own ad-hoc verification script (not part of
+the committed codebase — it passed raw string complaint IDs to a DELETE
+instead of `uuid.UUID(...)`, unlike every real test file's convention) left
+11 rows in the dev database; found via `test_repositories.py` failing
+against the wrong row/category counts, fixed with a manual `DELETE ...
+WHERE location IN (...)` targeting only the synthetic verification rows,
+confirmed by two subsequent clean full-suite runs (164 passed each) and a
+direct row count back to 36 (the seeded baseline).
+
+### Three-failure-mode audit (`docs/WORKFLOW.md`)
+
+- **Silent decisions:** none beyond what the five Open Questions and the
+  `cache_hit` correction already settled. Deviation 1's per-loop client
+  design is a test-only implementation detail forced by making the
+  already-approved design actually run correctly — it changes no approved
+  decision (rate-limit algorithm, TTLs, key composition, the four-layer
+  boundary — Redis import still confined to `providers/cache.py`).
+  Deviation 2's payload changes alter no test's assertion or intent, only
+  input data that was accidentally colliding.
+- **Unverified claims:** none — every Verification-required item above is
+  real, pasted output from an actual run, not a summary or an assertion.
+- **Undisclosed scope creep:** one real instance, disclosed as Deviation 3
+  — `backend/tests/conftest.py`, a file the Plan did not name. No other
+  file outside the Plan's list was touched; confirmed via `git diff
+  --stat` against the Plan's exact file list before committing.
+
+No new item needed adding to `docs/OPEN-DECISIONS.md` this phase — unlike
+Phase 7b's OQ4, everything found during implementation here was resolved
+in-phase, not left open.

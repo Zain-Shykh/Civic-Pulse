@@ -14,10 +14,15 @@ from sqlalchemy import text
 
 from app.db import engine
 from app.main import app
+from app.providers import cache
 from app.providers.triage.simulated import SimulatedTriage
 from app.routes.dependencies import get_triage_provider
 
 _DELETE = text("DELETE FROM complaints WHERE id = :id")
+# Distinct from every other test file's fixed IP (docs/specs/
+# phase-08-cache-layer.md's Plan, "Test isolation for the rate limiter") —
+# this file also POSTs to /api/complaints.
+_FILE_CLIENT_IP = "10.0.0.13"
 
 
 async def _delete(complaint_id: uuid.UUID) -> None:
@@ -27,7 +32,7 @@ async def _delete(complaint_id: uuid.UUID) -> None:
 
 @pytest.fixture
 def client() -> Iterator[TestClient]:
-    with TestClient(app) as c:
+    with TestClient(app, headers={"X-Real-IP": _FILE_CLIENT_IP}) as c:
         yield c
     app.dependency_overrides.clear()
 
@@ -66,8 +71,17 @@ class TestMetricsEndpoint:
             always_raise=True
         )
         try:
+            # Not this file's other test's "A" * 20 + "Test Location" —
+            # Phase 8's triage-result cache (docs/specs/
+            # phase-08-cache-layer.md) would replay that test's earlier
+            # non-fallback result as a cache hit here, never exercising this
+            # always-raising provider override.
             response = client.post(
-                "/api/complaints", json={"text": "A" * 20, "location": "Test Location"}
+                "/api/complaints",
+                json={
+                    "text": "A" * 15 + " unique fallback-counter-increments complaint",
+                    "location": "Test Location",
+                },
             )
             assert response.status_code == 201
             body = response.json()
@@ -78,3 +92,48 @@ class TestMetricsEndpoint:
                 await _delete(uuid.UUID(body["id"]))
         finally:
             app.dependency_overrides.clear()
+
+
+class TestLiveFallbackVsCacheReplay:
+    """docs/specs/phase-08-cache-layer.md's Plan correction (2026-09-23):
+    TRIAGE_FALLBACK_TOTAL must increment only on a LIVE fallback — a
+    triage-cache replay of an earlier fallback result must not increment
+    it again, even though the replayed row's triaged_by is still honestly
+    "rules:fallback"."""
+
+    async def test_cache_replay_of_a_fallback_does_not_double_count(
+        self, client: TestClient
+    ) -> None:
+        text_body = "A" * 20 + " unique fallback-replay-does-not-double-count complaint"
+        location = "Fallback Replay Test Location"
+        await cache.client.delete(cache._triage_cache_key(text_body, location))
+
+        app.dependency_overrides[get_triage_provider] = lambda: SimulatedTriage(
+            always_raise=True
+        )
+        created_ids: list[uuid.UUID] = []
+        try:
+            before_first = _fallback_total(client.get("/metrics").text)
+            first = client.post(
+                "/api/complaints", json={"text": text_body, "location": location}
+            )
+            assert first.status_code == 201
+            first_body = first.json()
+            created_ids.append(uuid.UUID(first_body["id"]))
+            after_first = _fallback_total(client.get("/metrics").text)
+            assert after_first - before_first == 1
+
+            second = client.post(
+                "/api/complaints", json={"text": text_body, "location": location}
+            )
+            assert second.status_code == 201
+            second_body = second.json()
+            created_ids.append(uuid.UUID(second_body["id"]))
+            assert second_body["triaged_by"] == "rules:fallback"
+            after_second = _fallback_total(client.get("/metrics").text)
+            assert after_second - after_first == 0
+        finally:
+            for complaint_id in created_ids:
+                await _delete(complaint_id)
+            app.dependency_overrides.clear()
+            await cache.client.delete(cache._triage_cache_key(text_body, location))

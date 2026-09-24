@@ -1,8 +1,8 @@
 """Domain-level exceptions raised by services/complaints.py.
 
-Both carry exactly the data a future route layer (Phase 7) needs to build
-its HTTP-level response — neither exception knows about HTTP status codes
-or response shapes, per CLAUDE.md's four-layer rule.
+All three carry exactly the data a route layer needs to build its
+HTTP-level response — none of them know about HTTP status codes or
+response shapes, per CLAUDE.md's four-layer rule.
 """
 
 import uuid
@@ -19,3 +19,11 @@ class NotFoundError(Exception):
     def __init__(self, complaint_id: uuid.UUID) -> None:
         self.complaint_id = complaint_id
         super().__init__(f"complaint {complaint_id} not found")
+
+
+class RateLimitExceededError(Exception):
+    """docs/specs/phase-08-cache-layer.md, Deliverable (b)."""
+
+    def __init__(self, retry_after_seconds: int) -> None:
+        self.retry_after_seconds = retry_after_seconds
+        super().__init__(f"rate limit exceeded, retry after {retry_after_seconds}s")

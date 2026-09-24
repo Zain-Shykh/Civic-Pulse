@@ -12,6 +12,8 @@ import pytest
 from sqlalchemy import text
 
 from app.db import engine
+from app.providers import cache
+from app.providers.triage.base import TriageResult
 from app.providers.triage.rules import RuleBasedTriage
 from app.providers.triage.simulated import SimulatedTriage
 from app.repositories import complaints as repository
@@ -20,6 +22,11 @@ from app.services import complaints as services
 from app.services.exceptions import IllegalTransitionError, NotFoundError
 
 _DELETE = text("DELETE FROM complaints WHERE id = :id")
+# submit_complaint() now rate-limits by client_ip regardless of caller (HTTP
+# or direct) — this file's own fixed IP, distinct from every other test
+# file's, so this file's ~5 direct calls never share a bucket with anything
+# in test_routes_complaints.py/test_routes_metrics.py/test_providers_cache.py.
+_TEST_CLIENT_IP = "10.0.0.10"
 
 
 async def _delete(complaint_id: uuid.UUID) -> None:
@@ -97,6 +104,7 @@ class TestTriageOrchestration:
             text="Water pipeline burst near the market, urgent repair needed.",
             location="Test Location",
             reporter_contact=None,
+            client_ip=_TEST_CLIENT_IP,
         )
         try:
             assert created["triaged_by"] == "simulated"
@@ -112,6 +120,7 @@ class TestTriageOrchestration:
             text="Streetlight has been broken for two weeks on our road.",
             location="Test Location",
             reporter_contact=None,
+            client_ip=_TEST_CLIENT_IP,
         )
         try:
             assert created["triaged_by"] == "rules"
@@ -136,6 +145,7 @@ class TestMandatoryDeterminism:
             text="This complaint's provider is broken on purpose.",
             location="Test Location",
             reporter_contact=None,
+            client_ip=_TEST_CLIENT_IP,
         )
         try:
             assert created["triaged_by"] == "rules:fallback"
@@ -144,9 +154,65 @@ class TestMandatoryDeterminism:
             await _delete(created["id"])
 
 
+class _CountingProvider:
+    """Wraps a real TriageProvider and counts calls to triage() —
+    docs/specs/phase-08-cache-layer.md's triage-cache Verification
+    requirement: proves a repeat complaint doesn't re-invoke the provider."""
+
+    name = "counting-wrapper"
+
+    def __init__(self, wrapped: SimulatedTriage) -> None:
+        self._wrapped = wrapped
+        self.call_count = 0
+
+    async def triage(self, text: str, location: str) -> TriageResult:
+        self.call_count += 1
+        return await self._wrapped.triage(text, location)
+
+
+class TestTriageResultCache:
+    """docs/specs/phase-08-cache-layer.md, Deliverable (c)."""
+
+    async def test_second_identical_complaint_does_not_reinvoke_provider(self) -> None:
+        provider = _CountingProvider(SimulatedTriage())
+        text_body = "A unique triage-cache test complaint about a water leak."
+        location = "Cache Test Location"
+
+        first = await services.submit_complaint(
+            provider,
+            text=text_body,
+            location=location,
+            reporter_contact=None,
+            client_ip=_TEST_CLIENT_IP,
+        )
+        try:
+            second = await services.submit_complaint(
+                provider,
+                text=text_body,
+                location=location,
+                reporter_contact=None,
+                client_ip=_TEST_CLIENT_IP,
+            )
+            try:
+                assert provider.call_count == 1
+                assert first["cache_hit"] is False
+                assert second["cache_hit"] is True
+                assert second["category"] == first["category"]
+                assert second["priority"] == first["priority"]
+                assert second["ai_summary"] == first["ai_summary"]
+                assert second["triaged_by"] == first["triaged_by"]
+            finally:
+                await _delete(second["id"])
+        finally:
+            await _delete(first["id"])
+            await cache.client.delete(cache._triage_cache_key(text_body, location))
+
+
 class TestStats:
     async def test_get_stats_matches_seed_distribution(self) -> None:
-        stats = await services.get_stats()
+        # get_stats() now returns (data, hit) — Deliverable (a); the hit
+        # flag itself is exercised at the route level (test_routes_stats.py).
+        stats, _hit = await services.get_stats()
 
         expected_by_status: dict[str, int] = {}
         for row in _COMPLAINTS:

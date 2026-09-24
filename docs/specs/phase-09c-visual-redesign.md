@@ -1,5 +1,5 @@
 # Phase 09c: Visual redesign
-Status: not started
+Status: done
 Depends on: Phase 9 (frontend real views) — done (`f739d2a`, `498642c`, `c19d85d`, `326e0dd`, `969ef79`, `a6c716d`, `7398903`). This is new scope beyond `docs/IMPLEMENTATION-PLAN.md`'s original Phase 9 entry, not a correction to it — Phase 9's own three views and typed API client are closed and are being restyled, not rebuilt.
 Reads first: `docs/specs/phase-09-frontend-views.md` (Plan + As-Built), `frontend/src/*` as it exists after Phase 9 (`App.tsx`, `api/client.ts`, `api/types.ts`, `hooks/useApiCall.ts`, `pages/Submit.tsx`, `Dashboard.tsx`, `Stats.tsx`), `frontend/tests/*`, `frontend/package.json`, `frontend/vite.config.ts`, `frontend/tsconfig.app.json`, `frontend/nginx.conf`, `docs/PARALLEL-WORK-PLAN.md`'s "Slice: Frontend" section, `docs/adr/0002-frontend-runtime-config.md`.
 
@@ -272,4 +272,108 @@ Manual browser walkthrough:
 Open Questions 1 and 5 above are both real corrections/gaps found against the original ask (no existing CSS to reconcile with; no stated dark-mode toggle mechanism) — surfaced here rather than silently resolved either way, per `docs/WORKFLOW.md`.
 
 ## As-Built
-Not started.
+
+Implemented in `9de5358` against the approved Plan (`09ff77c`, `e4dbe33`) — no Open Question re-decided, all 17 Plan files touched plus one small, necessary addition disclosed below.
+
+### Automated verification (`frontend/`, real pasted output)
+
+```
+$ npm run build
+> civicpulse-frontend@0.1.0 build
+> tsc -b && vite build
+
+vite v8.3.0 building client environment for production...
+transforming...
+✓ 134 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                  0.71 kB │ gzip:  0.39 kB
+dist/assets/index-D9VsiqsP.css  25.64 kB │ gzip:  5.38 kB
+dist/assets/index-C4rzr8Hf.js  189.59 kB │ gzip: 63.06 kB
+✓ built in 399ms
+
+$ npm run typecheck
+> civicpulse-frontend@0.1.0 typecheck
+> tsc -b --noEmit
+(no output — clean)
+
+$ npm run lint
+> civicpulse-frontend@0.1.0 lint
+> eslint .
+
+/home/zain-shykh/Desktop/SCD_ASSIGNMENTS/assign_1/frontend/src/components/ui/badge.tsx
+  48:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+/home/zain-shykh/Desktop/SCD_ASSIGNMENTS/assign_1/frontend/src/components/ui/button.tsx
+  66:18  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+✖ 2 problems (0 errors, 2 warnings)
+
+$ npm run test
+> civicpulse-frontend@0.1.0 test
+> vitest run
+
+ RUN  v5.0.1 /home/zain-shykh/Desktop/SCD_ASSIGNMENTS/assign_1/frontend
+
+ Test Files  5 passed (5)
+      Tests  15 passed (15)
+   Start at  16:38:03
+   Duration  3.01s (environment 61%, tests 19%, import 15%, transform 4%)
+```
+
+**OQ3's conditional claim, confirmed for real, not asserted:** all 13 of Phase 9's own tests (`api-client.test.ts`, `Submit.test.tsx`, `Dashboard.test.tsx`, `Stats.test.tsx`) still pass unchanged after the restyle — every accessible name, label association, literal string, and `data-testid="status"` the tests assert on survived, exactly as OQ3 predicted. The 2 new tests are `Home.test.tsx` (file 17). Lint's 2 warnings are exactly the pre-flagged, harmless `react-refresh` warnings from the shadcn CLI's own scaffold (Plan's "Still uncertain") — `eslint .` still exits `0`, nothing this phase wrote introduced them.
+
+### Manual browser walkthrough — real headless Chrome, real compose stack
+
+Same method as Phase 9's own As-Built and its X-Cache addendum: a Playwright script driving the system's real `/usr/bin/google-chrome`, over real HTTP through nginx, against the full `docker compose up -d --build` stack (all four containers healthy) — not a human visually inspecting pixels, disclosed as such rather than substituted silently.
+
+```
+[STEP 1] Home stat row rendered: [ '36', '15', '563ms' ]
+[STEP 1] Direct GET /api/stats computed: [ '36', '15', '563ms' ]
+[STEP 1] Match: true
+
+[STEP 2] Nav to "Home" — active underline present: true
+[STEP 2] Nav to "Report an issue" — active underline present: true
+[STEP 2] Nav to "Dashboard" — active underline present: true
+[STEP 2] Nav to "Stats" — active underline present: true
+
+[STEP 3] Submit result rendered: Category: roadsPriority: normalSummary: A pothole has appeared near the market, walkthrough9c 1790250024659.Triaged by: rules
+
+[STEP 4] Dashboard rows containing "Walkthrough9c Location": 1
+
+[STEP 5] Stats rendered: [
+  'counts_by_status: {"rejected":3,"resolved":6,"open":16,"in_progress":12}',
+  'counts_by_category: {"other":6,"roads":7,"sanitation":6,"electricity":6,"water":6,"streetlights":6}',
+  'average_triage_latency_ms: 547.8918918918919'
+]
+
+[STEP 6] 400 validation errors rendered: text: String should have at least 10 characterslocation: String should have at least 3 characters
+
+[STEP 7] 429 hit: { attempt: 9, text: 'Try again in 57s' }
+
+[STEP 8] Row status before any action: open
+[STEP 9] After illegal open->resolved click: {
+  alert: 'Cannot move from open to resolved: open -> resolved is not a legal transition',
+  status: 'open'
+}
+[STEP 10] After legal open->in_progress click: status cell now = in_progress
+```
+
+Matches every Verification-required item: Step 1 is the required Home-stats-vs-direct-`GET /api/stats` check, computed independently in the same page context and matched exactly (36 total / 15 open / 563ms average, both sides). Step 2 confirms all 4 nav items switch views and the emblem-accent underline moves to the active one. Steps 3–10 are Phase 9's original 7-step walkthrough (submit → dashboard → stats → 400 → 429 → illegal transition → legal transition), restyled but behaviorally identical — same real 201/400/429/409/200 outcomes as Phase 9's own As-Built.
+
+**Cleanup:** the walkthrough's 10 inserted rows (`location IN ('Walkthrough9c Location', 'Rate Limit9c Location')`) were deleted from the dev Postgres afterward; row count confirmed back at the seeded baseline of 36. Compose stack brought down after verification.
+
+### Deviations from the Plan
+
+1. **`frontend/src/main.tsx` gained a one-line `import "./index.css";`** — not itemized as its own numbered file in the committed Plan (an omission in how the Plan was written, not a decision made during implementation). Necessary, not optional: without it, Tailwind's generated CSS never reaches the built bundle at all, and Deliverable (a)'s entire mechanism is dead. Disclosed here rather than silently added or silently skipped.
+2. **`src/components/ui/badge.tsx`'s `variant` prop became required (no default value).** The Plan's §10 said to relabel the scaffolded variant keys to the seven domain values, but didn't address that the scaffolded component also defaulted `variant` to the literal string `"default"` — which no longer exists as a variant once relabeled, and `npm run build`'s real `tsc -b` output caught this directly (`TS2322`). Since every real call site (`Dashboard.tsx`) always passes an explicit `variant`, and no domain-meaningful "default" tag color exists in the brief, making it required (rather than inventing an eighth default variant) was the smaller, more honest fix.
+3. **The Home/nav "Report an issue" duplicate accessible name — found, not fixed.** The manual walkthrough's Step 2 hit a real `strict mode violation`: Home's hero CTA button and the nav's own item both render the exact text "Report an issue" simultaneously on the Home screen — the same class of issue Phase 9's own As-Built found and fixed for "Submit" vs "Submit". Unlike that case, both occurrences here are the approved design brief's own prescribed copy verbatim (the brief names the nav item "Report an issue" and separately specifies "a primary 'Report an issue' button"), not an incidental collision this phase introduced — so it was not unilaterally renamed. The verification script disambiguates them by landmark region (`nav` vs `main`), which is also how a screen reader or keyboard user could still tell them apart despite the identical flat accessible name. Flagged here for your awareness rather than silently worked around and left unmentioned.
+4. **Home's exact 3 stats (Complaints reported / Open right now / Average triage time) and Footer's exact copy line are this phase's own content choices** — the brief specified "3 stats" and "a copyright/non-emergency-affiliation line" without naming exact text, consistent with the brief's own "your call on exact wording" latitude elsewhere. Disclosed as content decisions, not silently assumed to be non-decisions.
+
+None of these touch a file outside the Plan's 17 (plus the disclosed `main.tsx` addition), and none re-opens any of the five Open Questions.
+
+### WORKFLOW.md three-failure-mode audit
+
+- **Silent decisions?** None beyond the four deviations above, each disclosed with why. `main.tsx`'s import was a necessary completion of the Plan's own stated mechanism, not a new decision; the Badge `variant` fix was forced by a real compiler error, not a preference; the duplicate-name finding was left as approved-copy-as-is rather than silently changed; Home/Footer's exact wording was already within the brief's own stated latitude.
+- **Unverified claims?** None — every Verification-required item above has real, pasted output, including OQ3's conditional claim confirmed by an actual test run (15/15, not asserted). The walkthrough's method (scripted real-browser, not a human's eyes) is stated plainly.
+- **Undisclosed scope creep?** None — `git status`/`git diff --stat` before committing showed changes confined to `frontend/`, matching the Plan's 17 files plus the one disclosed addition; nothing in `docs/`, `backend/`, or elsewhere was touched.

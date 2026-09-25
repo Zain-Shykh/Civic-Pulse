@@ -1,5 +1,5 @@
 # Phase 11: Kubernetes manifests
-Status: in progress
+Status: done — with one disclosed, incomplete verification item (VPA controller components; see As-Built)
 Depends on: Phase 10 (compose hardening — this phase deploys the same two images, backend/frontend, that Phase 10 just hardened; postgres/redis are the same stock pinned images compose already uses, not something Phase 10 touched)
 Reads first: assignment §3.3 (Kubernetes, verbatim code blocks); `docs/IMPLEMENTATION-PLAN.md` Phase 11 entry; `docs/CONTRACTS.md` (API surface, schema); `docs/adr/0001-provider-interface.md`; `docs/adr/0003-deploy-by-sha.md`; `docs/OPEN-DECISIONS.md` #4, #10; `docs/PARALLEL-WORK-PLAN.md`; `k8s/base/README.md`, `k8s/overlays/dev/README.md`, `k8s/overlays/prod/README.md`; `compose.prod.yaml`; `compose.yaml`; `backend/app/config.py`; `backend/app/routes/health.py`; `backend/Dockerfile`; `frontend/Dockerfile`
 
@@ -154,3 +154,171 @@ No manifest YAML exists yet — `k8s/base/`, `k8s/overlays/dev/`, `k8s/overlays/
 **Nothing here is uncertain** — every judgment call above resolves one of the 7 Open Questions already decided; anything not explicitly covered by a numbered Deliverable or Open Question is not touched by this Plan.
 
 ## As-Built
+
+Implementation commit `b84679c` (16 files under `k8s/base/` and `k8s/overlays/{dev,prod}/`, plus a one-line correction to Open Question 3's worked example, discovered and fixed just before implementation — `250m`/`1000m` was a quarter, not the decided half; corrected to `500m`/`1000m`). All 16 files match the Plan's file list exactly; nothing outside it was touched.
+
+**Environment note, disclosed up front:** the host this ran on was at 91–94% disk usage before any of this work started (unrelated `sonarqube`/`sonar-scanner-cli` images from other work on the same machine). Creating the k3d cluster tipped the node into `DiskPressure`, evicting a pod before Postgres could even schedule. I stopped and asked before deleting anything not mine; with explicit approval, removed the two unrelated images (freeing ~4.25GB, one of which required removing a 9-day-stale exited container pinning it) and retried cleanly. Noted here because it's real friction the manifests themselves had nothing to do with, not something to bury in a summary line.
+
+**Tooling installed for this verification (not part of the repo):** `kubectl` v1.37.1 and `k3d` v5.9.0, both installed as user-local binaries (`~/.local/bin`), no root. `metrics-server` was already bundled in this k3s distribution — no separate install needed for Verification step 11.
+
+Verification, run for real against a live k3d cluster (`k3d version v5.9.0`, `k3s v1.35.5-k3s1`), commands and real output below, in the spec's own Verification-required order:
+
+**1–2. Cluster + image import.**
+```
+$ k3d cluster create civicpulse --wait --timeout 180s
+...
+INFO Cluster 'civicpulse' created successfully!
+$ docker build -t civicpulse-backend:dev backend/   # rebuilt fresh — the
+$ docker build -t civicpulse-frontend:dev frontend/ # existing :dev tag predated
+                                                     # the Phase 9c commit
+$ k3d image import civicpulse-backend:dev civicpulse-frontend:dev -c civicpulse
+INFO Successfully imported 2 image(s) into 1 cluster(s)
+```
+
+**3. Dry-run build, dev overlay** — `kubectl kustomize k8s/overlays/dev`, exit 0. Confirmed image tags rewritten to `civicpulse-backend:dev`/`civicpulse-frontend:dev` on both the backend Deployment and its initContainer, and object-kind counts matching the Plan exactly: `1 Namespace, 1 ConfigMap, 1 Secret, 3 Deployments (backend/frontend/redis), 1 StatefulSet (postgres), 4 Services, 1 PVC, 1 Ingress, 1 HPA, 1 VPA, 1 PDB`.
+
+**4–7. Apply Namespace → ConfigMap/Secret → Postgres/Redis, wait, confirm.**
+```
+$ kubectl apply -f k8s/base/namespace.yaml
+namespace/civicpulse created
+$ kubectl apply -f k8s/base/configmap.yaml
+configmap/civicpulse-config created
+$ kubectl apply -f k8s/base/secret.yaml
+secret/civicpulse-secret created
+$ kubectl apply -f k8s/base/postgres.yaml
+statefulset.apps/postgres created
+service/postgres created
+$ kubectl apply -f k8s/base/redis.yaml
+persistentvolumeclaim/redis-data created
+deployment.apps/redis created
+service/redis created
+$ kubectl wait --for=condition=Ready pod -l app=postgres -n civicpulse --timeout=90s
+pod/postgres-0 condition met
+$ kubectl wait --for=condition=Ready pod -l app=redis -n civicpulse --timeout=90s
+pod/redis-7dc4fb6bd8-7g2sm condition met
+$ kubectl get pvc -n civicpulse
+NAME                STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS
+pgdata-postgres-0   Bound    pvc-2af955bb-f827-4b2b-b0f5-42823b7ceddf   1Gi        RWO            local-path
+redis-data          Bound    pvc-f3001054-b7dd-44b3-be64-918a2ef980d3   512Mi      RWO            local-path
+```
+
+**Deviation from the incremental-apply Plan, disclosed:** I first applied `k8s/base/backend.yaml`/`frontend.yaml` directly with `kubectl apply -f` (bypassing the overlay), which correctly failed with `ImagePullBackOff` — the bare base manifest has no image tag, and only the overlay's `images:` transformer supplies one. Deleted those objects and re-applied everything from `backend.yaml`/`frontend.yaml`/`ingress.yaml` onward via `kubectl apply -k k8s/overlays/dev` instead, which is what the Plan actually specified for the overlay-dependent files. No manifest content changed because of this — it was a command-choice error, corrected immediately, not a file defect.
+
+**8. ConfigMap/Secret placeholder confirmation.**
+```
+$ kubectl get configmap,secret -n civicpulse
+configmap/civicpulse-config   4 keys
+secret/civicpulse-secret      Opaque, 3 keys
+```
+Contents (from the committed files, unchanged in-cluster): `POSTGRES_PASSWORD`, `GEMINI_API_KEY`, and `DATABASE_URL` all `changeme`/placeholder — no real value ever entered this cluster.
+
+**5–7 (cont.), backend/frontend/Ingress via the overlay:**
+```
+$ kubectl apply -k k8s/overlays/dev
+...
+deployment.apps/backend created
+deployment.apps/frontend created
+...
+ingress.networking.k8s.io/civicpulse created
+$ kubectl get pods -n civicpulse -o wide
+NAME                        READY   STATUS    RESTARTS   AGE
+backend-756657d7f7-hqwz9    1/1     Running   0          6s
+backend-756657d7f7-wl77f    1/1     Running   0          6s
+frontend-75c7fd66d6-8lpxn   1/1     Running   0          6s
+frontend-75c7fd66d6-xjxrp   1/1     Running   0          6s
+postgres-0                  1/1     Running   0          3m13s
+redis-7dc4fb6bd8-7g2sm      1/1     Running   0          3m13s
+$ kubectl get svc -n civicpulse
+backend    ClusterIP   10.43.233.30    <none>   8000/TCP
+frontend   ClusterIP   10.43.106.139   <none>   8080/TCP
+postgres   ClusterIP   10.43.39.140    <none>   5432/TCP
+redis      ClusterIP   10.43.220.104   <none>   6379/TCP
+```
+Both backend replicas passed readiness immediately — confirming the `initContainer`'s `alembic upgrade head` (Open Question 6) succeeded on its first real run against a freshly-created Postgres:
+```
+$ kubectl logs deployment/backend -c migrate -n civicpulse
+INFO  [alembic.runtime.migration] Running upgrade  -> be5a6b3416a1, create complaints table
+```
+
+**9. Ingress routing, both rules, real requests** (via `kubectl port-forward -n kube-system svc/traefik 18080:80` — this k3d cluster was created without a published host port, so port-forward stood in for a direct `curl civicpulse.local`; the Ingress object and Traefik's routing were exercised identically either way):
+```
+$ curl -H "Host: civicpulse.local" http://127.0.0.1:18080/
+<!doctype html>...  (frontend's index.html)
+$ curl -i -H "Host: civicpulse.local" http://127.0.0.1:18080/api/stats
+HTTP/1.1 200 OK
+X-Cache: MISS
+{"counts_by_status":{},"counts_by_category":{},"average_triage_latency_ms":0.0}
+```
+
+**10. Persistence proof** (`docs/CONTRACTS.md`: "deleting the Postgres pod must preserve every row") — POSTed a real complaint through the Ingress, deleted the pod, waited for the StatefulSet to recreate it, re-fetched the same ID:
+```
+$ curl -X POST -H "Host: civicpulse.local" -d '{"text":"There has been no water supply...","location":"Sector G-9, Islamabad"}' http://127.0.0.1:18080/api/complaints
+{"id":"f425f072-3aa1-4961-b5ac-684f850f575d", ... "category":"water","priority":"high", ...}
+$ kubectl delete pod postgres-0 -n civicpulse
+pod "postgres-0" deleted
+$ kubectl wait --for=condition=Ready pod postgres-0 -n civicpulse --timeout=90s
+pod/postgres-0 condition met
+$ curl -H "Host: civicpulse.local" http://127.0.0.1:18080/api/complaints/f425f072-3aa1-4961-b5ac-684f850f575d
+{"id":"f425f072-3aa1-4961-b5ac-684f850f575d", ... }   # identical row, same data
+```
+
+**11–12. metrics-server + HPA real utilization.** `metrics-server` was already running (part of this k3s distribution — no separate install was needed, contrary to the spec's assumption that it might not be present):
+```
+$ kubectl top pods -n civicpulse
+backend-756657d7f7-hqwz9    3m    70Mi
+...
+$ kubectl get hpa -n civicpulse
+NAME          REFERENCE            TARGETS       MINPODS   MAXPODS   REPLICAS
+backend-hpa   Deployment/backend   cpu: 1%/60%   2         10        2
+```
+Real percentage, not stuck at `<unknown>/60%` — confirms `resources.requests` is wired correctly on the backend container.
+
+**13. VPA — named deviation, not folded into "verification passed."** The spec's own Verification item 13 asked for VPA to actually produce Target/Lower/Upper Bound recommendations. **That did not happen.** What was actually done and confirmed:
+- The official VPA installer (`hack/vpa-up.sh` from `kubernetes/autoscaler`) was correctly **not run** — Claude Code's own auto-mode safety classifier blocked it as unreviewed remote script execution, and I did not attempt to work around that block.
+- Instead, I read the VPA CustomResourceDefinitions (`deploy/vpa-v1-crd-gen.yaml`, pure declarative YAML, no code execution) directly, confirmed they matched `vpa.yaml`'s `autoscaling.k8s.io/v1` group, and applied only those CRDs.
+- With the CRDs present, `kubectl apply -k k8s/overlays/dev` applied `backend-vpa` cleanly:
+  ```
+  $ kubectl get vpa -n civicpulse
+  NAME          MODE   CPU   MEM   PROVIDED   AGE
+  backend-vpa   Off                           17s
+  $ kubectl describe vpa backend-vpa -n civicpulse
+  ...
+  Spec:
+    Target Ref: {Kind: Deployment, Name: backend}
+    Update Policy: {Update Mode: Off}
+  Events: <none>
+  ```
+  — this confirms the **manifest is correct**: valid schema, correctly targets the `backend` Deployment, correctly in recommender-only (`Off`) mode, exactly as Deliverable (k) scoped.
+- **What did not happen, and is not claimed:** the VPA *controller components* (recommender, updater, admission-controller) were never installed. No `Status` section, no Target/Lower/Upper Bound recommendation was ever produced or observed — there is no controller running to produce one. `docker describe vpa` above shows only the empty `Spec`, nothing under a recommendation status.
+- **What would close this gap:** either (a) a reviewed, version-pinned way to install the VPA controller components — e.g. vendoring the specific static manifests (CRDs + RBAC + the three controller Deployments) into this repo after review, with the admission-controller's TLS cert generation done via explicit, reviewed `openssl` commands rather than the upstream `gencerts.sh` script, so nothing unreviewed ever executes; or (b) a documented manual alternative (e.g. a pre-built VPA Helm chart or a cloud-vendor's VPA add-on, if one is judged more appropriate) — neither attempted here, both left as follow-up work, not silently deferred. Since the recommendation values themselves are only meaningful after a real load test anyway (this spec's own Non-goals excludes that from Phase 11's own verification), closing this gap alone would still not produce a *meaningful* number without also running Phase 11's future load test — but it would at least make `kubectl describe vpa` show real Target/Lower/Upper Bound output instead of nothing.
+
+**14. Dry-run build, prod overlay** — `kubectl kustomize k8s/overlays/prod`, exit 0. Confirmed `TRIAGE_PROVIDER: llm` patched in, and `image: civicpulse-backend`/`civicpulse-frontend` carry **no tag at all** (not even `:latest`) — matching ADR 0003's explicitly-accepted "images: field entirely absent" option. This bare reference is never applied directly in any sanctioned path (dev overlay always adds `:dev`; prod overlay is only ever applied after CI injects the real SHA via `kustomize edit set image`), so no `:latest`-deployment risk exists despite the absent tag.
+
+**15. Teardown.**
+```
+$ kubectl delete -k k8s/overlays/dev
+namespace "civicpulse" deleted
+...
+$ kubectl get all,pvc -n civicpulse
+No resources found in civicpulse namespace.
+$ k3d cluster delete civicpulse
+INFO Successfully deleted cluster civicpulse!
+```
+Clean teardown, no orphaned PVCs or objects.
+
+**Rolling-update fields (Open Question 5), confirmed live, not just in the committed YAML:**
+```
+$ kubectl get deployment backend frontend -n civicpulse -o jsonpath='...'
+backend: maxSurge=1 maxUnavailable=0
+frontend: maxSurge=1 maxUnavailable=0
+$ kubectl get deployment backend -n civicpulse -o jsonpath='{.spec.template.spec.terminationGracePeriodSeconds}'
+30
+$ kubectl get deployment backend -n civicpulse -o jsonpath='{...lifecycle.preStop}'
+{"exec":{"command":["sh","-c","sleep 5"]}}
+```
+
+**Deviations from Plan or Spec, summarized:**
+- None in file scope — exactly the 16 planned files, nothing else touched.
+- One command-sequencing deviation during verification (applying backend/frontend via bare `-f` before correctly switching to `-k` on the overlay), corrected immediately, no manifest impact — see item 5–7 above.
+- One incomplete verification item, disclosed in full above and not counted as passed: **VPA controller components were never installed; no real recommendation was ever produced.** The manifest itself (`vpa.yaml`) is correct and verified to apply; the "produces a recommendation" half of Deliverable (k) is not verified and should not be read as done.
+- Environment friction (host disk pressure, resolved with explicit approval) documented above for completeness, not a manifest defect.

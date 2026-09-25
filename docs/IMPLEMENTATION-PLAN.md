@@ -114,6 +114,8 @@ Split into two sub-phases because they have genuinely different risk profiles:
 - No LLM key in any committed manifest, even base64 (§5.3 deduction) — Secret is templated/injected, never committed with a real value.
 - **Done looks like:** `k3d` local cluster, `kubectl apply -k overlays/dev` brings the whole stack up healthy; HPA visibly scales replicas under the k6 load test (needed for the replicas-vs-load chart, `docs/OPEN-DECISIONS.md` #8).
 
+**Phase 11b — Provider fail-fast + real HPA/VPA verification (added after Phase 11 shipped, not originally planned here):** a follow-up phase closing two gaps Phase 11 explicitly disclosed rather than fixed: `docs/OPEN-DECISIONS.md` #12 (no Kubernetes-manifest-level fail-fast for an empty `GEMINI_API_KEY`) via an application-level startup check in `backend/app/providers/triage/factory.py`, and Phase 11 As-Built's named VPA deviation (controller components never installed, no recommendation ever produced) via a reviewed controller-component install plus a real `load/k6-script.js` load test closing the assignment's own 5-step VPA loop end to end. See `docs/specs/phase-11b-failfast-and-vpa-verification.md`.
+
 ## Phase 12 — CI/CD
 
 **Depends on:** Phase 11 (cd.yml deploys manifests that must already exist) and Phase 5a at minimum (ci.yml needs `SimulatedTriage` for deterministic test runs).

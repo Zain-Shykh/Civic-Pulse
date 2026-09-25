@@ -108,7 +108,13 @@ export default function Dashboard() {
         </p>
       )}
 
-      {listState.status === "success" && (
+      {listState.status === "success" && listState.data.items.length === 0 && (
+        <p className="mt-4 text-ink-secondary">
+          No complaints match the current filters.
+        </p>
+      )}
+
+      {listState.status === "success" && listState.data.items.length > 0 && (
         <>
           <table className="mt-4 w-full border-collapse text-left text-sm">
             <tbody>

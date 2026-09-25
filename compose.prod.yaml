@@ -39,6 +39,8 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379/0
+      TRIAGE_PROVIDER: ${TRIAGE_PROVIDER:?TRIAGE_PROVIDER must be set for a production deploy — see docs/adr/0001-triage-provider-interface.md}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?GEMINI_API_KEY must be set for a production deploy}
     depends_on:
       postgres:
         condition: service_healthy

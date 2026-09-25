@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: civicpulse-config
+  namespace: civicpulse
+data:
+  REDIS_URL: redis://redis:6379/0
+  # Base default: no API key needed. Overridden to "llm" in overlays/prod.
+  TRIAGE_PROVIDER: rules
+  POSTGRES_USER: civicpulse
+  POSTGRES_DB: civicpulse

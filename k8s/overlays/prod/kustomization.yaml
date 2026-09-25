@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+patches:
+  # TRIAGE_PROVIDER=llm is unconditional for prod, mirroring
+  # compose.prod.yaml's own requirement from Phase 10 — but note (Open
+  # Question 4 / docs/OPEN-DECISIONS.md #12) there is no manifest-level
+  # fail-fast if GEMINI_API_KEY in secret.yaml is left as a placeholder;
+  # this patch alone does not make that safe.
+  - target:
+      kind: ConfigMap
+      name: civicpulse-config
+    patch: |-
+      - op: replace
+        path: /data/TRIAGE_PROVIDER
+        value: llm
+
+# No images: transformer here — per ADR 0003, the real commit-SHA tag is
+# injected only by Phase 12's CI (`kustomize edit set image`), never
+# hand-written into this committed file.

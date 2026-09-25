@@ -1,0 +1,19 @@
+# Recommender mode only — see docs/specs/phase-11-kubernetes-manifests.md,
+# Deliverable (k) for the full HPA/VPA-conflict reasoning (not just this
+# manifest comment): HPA scales replicas on CPU utilization; if VPA also
+# adjusted the backend's CPU request in Auto mode, the two would fight over
+# the same signal. updateMode: "Off" means VPA only recommends — a human
+# reviews `kubectl describe vpa backend-vpa` and updates resources.requests
+# by hand.
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: backend-vpa
+  namespace: civicpulse
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+  updatePolicy:
+    updateMode: "Off"

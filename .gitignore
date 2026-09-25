@@ -43,3 +43,4 @@ kubeconfig
 
 # --- Load test output ---
 load/results/
+CLAUDE.md

@@ -125,7 +125,7 @@ Split into two sub-phases because they have genuinely different risk profiles:
 - `ci.yml`: lint, typecheck, test (backend + frontend), build images.
 - `cd.yml`: gated by `needs:` on `ci.yml` passing; deploy-by-SHA (ADR 0003) — never `:latest`.
 - `release.yml`: publish to GHCR with an SBOM via Syft.
-- **Revisit bonus scope here** (`docs/OPEN-DECISIONS.md` #10, `CLAUDE.md` "still open") — this is the phase it was deferred to.
+- **Bonus scope (`docs/OPEN-DECISIONS.md` #10) is explicitly not resolved or executed here** — decided to finish the core 150-mark requirement set solidly first; every bonus item is a named Non-goal in `docs/specs/phase-12-ci-cd.md`, not this phase's job.
 - **Done looks like:** a PR triggers `ci.yml` and it goes green; a merge to `dev`/`main` (per whatever branch policy exists by then) triggers `cd.yml`, which only runs if `ci.yml` passed, and deploys an image tagged with the real commit SHA.
 
 ## Phase 13 — Documentation close-out

@@ -16,7 +16,7 @@ Everything below is left open by the assignment on purpose. Each is a question f
 | 8 | Load-test tool | k6 |
 | 9 | Scope given team status | Full assignment scope, self-paced timeline — see note in §9 below |
 
-Still open: 10 (bonus items) — revisit before the CI/CD phase. 12 (K8s-layer fail-fast gap for `GEMINI_API_KEY`) — no owner phase assigned yet.
+Still open: 10 (bonus items) — deferred past Phase 12 (CI/CD): decided to finish the core 150-mark requirement set solidly first, revisit bonus scope only once that's done. Not resolved or executed by Phase 12 itself; see `docs/specs/phase-12-ci-cd.md`'s Non-goals. 12 (K8s-layer fail-fast gap for `GEMINI_API_KEY`) — no owner phase assigned yet.
 
 ## 1. LLM provider choice — RESOLVED
 
@@ -95,7 +95,9 @@ Original framing kept for reference — spec (§5.1) offers three configurations
 
 Spec (§4, Bonus): zero-downtime rolling update under live load (+4), GitOps via Argo CD/Flux (+4), deploy-by-digest with Cosign signing (+3), Prometheus + Grafana dashboard (+2), OpenTelemetry tracing frontend→backend→LLM (+2).
 
-**Question:** Attempt any bonus items, and if so which — or treat the 150-mark core as the entire scope until it's solid, given solo bandwidth?
+**Decided:** finish the core 150-mark requirement set solidly first; revisit bonus scope only once that's done. This decision is **not** Phase 12's to make or execute — `docs/specs/phase-12-ci-cd.md` builds only the assignment's own required `ci.yml`/`cd.yml`/`release.yml` core (§3.4, Rubric Category I), with every bonus item (GitOps, digest pinning + Cosign, Prometheus/Grafana, OpenTelemetry, zero-downtime-under-load) explicitly named in its Non-goals. `docs/IMPLEMENTATION-PLAN.md`'s Phase 12 entry previously said bonus scope was "the phase it was deferred to" — that was wrong the moment Phase 12 was scoped as core-only, and is corrected in the same commit as this entry.
+
+**Question, still open:** which bonus items (if any) to pursue, and when — genuinely revisit once Phase 12 (and realistically Phase 13's documentation close-out) leave the core 150 solid, not before.
 
 ## 11. Prometheus can't reach `/metrics` under the current compose shape
 

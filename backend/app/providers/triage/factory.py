@@ -30,6 +30,11 @@ def _simulated() -> TriageProvider:
 def _llm() -> TriageProvider:
     from app.providers.triage.llm import LLMTriage
 
+    if not settings.gemini_api_key.strip():
+        raise RuntimeError(
+            "TRIAGE_PROVIDER=llm requires a non-empty GEMINI_API_KEY; "
+            "refusing to start rather than silently falling back to rules on every call."
+        )
     return LLMTriage(api_key=settings.gemini_api_key)
 
 

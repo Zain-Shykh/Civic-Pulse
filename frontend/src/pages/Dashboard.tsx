@@ -12,6 +12,8 @@ import { CATEGORIES, PRIORITIES, STATUSES, type ApiError, type Category, type Pr
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { useApiCall } from "../hooks/useApiCall";
+import ComplaintDetailModal from "../components/ComplaintDetailModal";
+import type { Complaint } from "../api/types";
 
 const PAGE_SIZE = 20;
 
@@ -22,7 +24,7 @@ export default function Dashboard() {
   const [status, setStatus] = useState<Status | "">("");
   const [listState, runList] = useApiCall(listComplaints);
   const [rowActions, setRowActions] = useState<Record<string, { loading: boolean; error?: ApiError }>>({});
-
+  const [selectedComplaint, setSelectedComplaint] = useState<Complaint | null>(null);
   useEffect(() => {
     runList({
       page,
@@ -115,7 +117,8 @@ export default function Dashboard() {
               {listState.data.items.map((complaint) => {
                 const action = rowActions[complaint.id];
                 return (
-                  <tr key={complaint.id} className="border-b border-border">
+                  <tr key={complaint.id} className="cursor-pointer border-b border-border hover:bg-muted"
+                    onClick={() => setSelectedComplaint(complaint)}>
                     <td className="py-2 pr-4">{complaint.location}</td>
                     <td className="py-2 pr-4">{complaint.category}</td>
                     <td className="py-2 pr-4">
@@ -127,12 +130,15 @@ export default function Dashboard() {
                     <td className="py-2">
                       <div className="flex flex-wrap gap-1">
                         {STATUSES.map((s) => (
-                          <Button
+                           <Button
                             key={s}
                             size="sm"
                             variant="outline"
                             disabled={action?.loading}
-                            onClick={() => handleAction(complaint.id, s)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleAction(complaint.id, s);
+                            }}
                           >
                             {s}
                           </Button>
@@ -163,6 +169,9 @@ export default function Dashboard() {
             </Button>
           </div>
         </>
+      )}
+    {selectedComplaint && (
+        <ComplaintDetailModal complaint={selectedComplaint} onClose={() => setSelectedComplaint(null)} />
       )}
     </div>
   );

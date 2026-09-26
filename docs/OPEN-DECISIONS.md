@@ -16,7 +16,9 @@ Everything below is left open by the assignment on purpose. Each is a question f
 | 8 | Load-test tool | k6 |
 | 9 | Scope given team status | Full assignment scope, self-paced timeline — see note in §9 below |
 
-Still open: 10 (bonus items) — deferred past Phase 12 (CI/CD): decided to finish the core 150-mark requirement set solidly first, revisit bonus scope only once that's done. Not resolved or executed by Phase 12 itself; see `docs/specs/phase-12-ci-cd.md`'s Non-goals. 12 (K8s-layer fail-fast gap for `GEMINI_API_KEY`) — no owner phase assigned yet.
+Still open: 10 (bonus items) — deferred past Phase 12 (CI/CD): decided to finish the core 150-mark requirement set solidly first, revisit bonus scope only once that's done. Not resolved or executed by Phase 12 itself; see `docs/specs/phase-12-ci-cd.md`'s Non-goals.
+
+Resolved since first raised: 12 (K8s-layer fail-fast gap for `GEMINI_API_KEY`) — closed by Phase 11b's application-level startup check, see below.
 
 ## 1. LLM provider choice — RESOLVED
 
@@ -110,7 +112,9 @@ This blocks the rest of RUBRIC-CHECKLIST.md's bonus line ("Prometheus scraping /
 
 **Resolved (architecture only) — `docs/specs/phase-10-compose-hardening.md`, Open Question 1:** if the Prometheus/Grafana bonus item is ever pursued, Prometheus runs as its own compose service on the `edge` network, scraping `backend:8000/metrics` by Docker service name — no published host port on `backend`. Why: matches how `frontend` already reaches `backend`; Prometheus is pull-based, and keeping a scrape target network-internal rather than publicly exposed is standard practice regardless of environment. **Execution is still deferred to decision #10** ("which bonus items to pursue," still open) — no `prometheus` service, scrape config, or Grafana setup exists yet; this only fixes the shape it would take if #10 says yes.
 
-## 12. No Kubernetes-manifest-level equivalent of Compose's `GEMINI_API_KEY` fail-fast
+## 12. No Kubernetes-manifest-level equivalent of Compose's `GEMINI_API_KEY` fail-fast — RESOLVED
+
+**Decided:** closed by Phase 11b (`docs/specs/phase-11b-failfast-and-vpa-verification.md`, Deliverable (a)) — an application-level startup check in `backend/app/providers/triage/factory.py`'s `_llm()`, raising `RuntimeError` before `LLMTriage` is ever constructed if `TRIAGE_PROVIDER=llm` and `GEMINI_API_KEY` is empty/whitespace-only. Confirmed live: this crashes `uvicorn`'s startup, producing a real `CrashLoopBackOff` in `kubectl get pods` instead of a silently-degraded "healthy" pod — closing the gap at the one place both Compose and Kubernetes share (`main.py`'s `lifespan`), exactly as this entry's own "What would close it" section anticipated.
 
 Raised during Phase 11 (`docs/specs/phase-11-kubernetes-manifests.md`, Open Question 4).
 
@@ -122,4 +126,4 @@ Phase 10 made `compose.prod.yaml` refuse to resolve at all (`docker compose conf
 
 **What would close it:** an application-level startup check — e.g. in `backend/app/providers/triage/factory.py` or `backend/app/config.py` — that refuses to construct `LLMTriage` (crashes the process, which then fails its startup/liveness probe and crash-loops visibly in `kubectl get pods`, rather than starting "successfully") when `TRIAGE_PROVIDER=llm` and `GEMINI_API_KEY` is empty.
 
-**Not decided or built here** — this is application code, out of scope for Phase 11's manifests-only Deliverables. Flagged for a future phase (not assigned an owner phase yet, same posture as #10/#11 before their owner phases were identified).
+**Not decided or built here** — this was application code, out of scope for Phase 11's manifests-only Deliverables, and was flagged for a future phase at the time this entry was written. **That future phase arrived and closed it:** Phase 11b (see the resolution note above) — this entry is kept for the reasoning history, not as an open item.

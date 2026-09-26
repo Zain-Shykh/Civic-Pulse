@@ -1,0 +1,47 @@
+# Runs load/k6-script.js as many Job pods, each with its own real, distinct
+# pod IP — see that script's header comment for why (Traefik strips/ignores
+# a client-supplied X-Real-IP, so one external k6 process can't simulate
+# distinct clients against the rate-limited POST /api/complaints).
+#
+# Not part of k8s/base's Kustomize-managed app manifests — a one-off test
+# tool, applied directly:
+#   kubectl create configmap k6-script -n civicpulse --from-file=load/k6-script.js
+#   kubectl apply -f load/k6-job.yaml
+#
+# parallelism/completions are a starting guess, calibrated live during
+# Verification (docs/specs/phase-11b-failfast-and-vpa-verification.md).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k6-load-test
+  namespace: civicpulse
+spec:
+  parallelism: 450
+  completions: 450
+  backoffLimit: 100
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: k6
+          image: grafana/k6:2.3.0
+          args: ["run", "/scripts/k6-script.js"]
+          env:
+            - name: BASE_URL
+              value: "http://backend:8000"
+            - name: DURATION
+              value: "7m"
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+      volumes:
+        - name: script
+          configMap:
+            name: k6-script

@@ -11,6 +11,7 @@ disagree with those fixture labels on.
 
 import pytest
 
+from app.config import settings
 from app.providers.triage.base import Category, Priority, TriageResult
 from app.providers.triage.factory import get_triage_provider
 from app.providers.triage.rules import RuleBasedTriage
@@ -104,6 +105,12 @@ class TestFactory:
     def test_factory_fails_fast_on_not_yet_implemented_ollama(self, monkeypatch):
         monkeypatch.setenv("TRIAGE_PROVIDER", "ollama")
         with pytest.raises(KeyError):
+            get_triage_provider()
+
+    def test_factory_fails_fast_on_llm_provider_with_empty_api_key(self, monkeypatch):
+        monkeypatch.setenv("TRIAGE_PROVIDER", "llm")
+        monkeypatch.setattr(settings, "gemini_api_key", "")
+        with pytest.raises(RuntimeError):
             get_triage_provider()
 
 

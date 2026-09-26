@@ -58,8 +58,13 @@ spec:
                   key: GEMINI_API_KEY
           resources:
             requests:
-              cpu: 500m
-              memory: 256Mi
+              # VPA-recommended, not guessed — docs/specs/
+              # phase-11b-failfast-and-vpa-verification.md's As-Built.
+              # Phase 11's original guess (500m/256Mi, a halved-limit
+              # heuristic) is superseded by this real kubectl describe vpa
+              # backend-vpa Target under real load.
+              cpu: 163m
+              memory: 250Mi
             limits:
               cpu: "1"
               memory: 512Mi

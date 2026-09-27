@@ -184,3 +184,97 @@ Steps: lowercase-owner (same step as `cd.yml`), `docker/login-action@v4`, then f
 5. Merge the PR for real (this is otherwise a genuine, if small, real change — not a throwaway branch abandoned after the screenshots).
 
 ## As-Built
+
+All three workflow files (`.github/workflows/ci.yml`, `cd.yml`, `release.yml`) are implemented, committed, and have run for real end to end. Everything in the Plan above was built as written; six real bugs surfaced only by actually running the pipeline (not by re-reading the YAML), all fixed with disclosed root causes, none silently patched around. Two real, disclosed non-file actions were taken directly against GitHub's settings/API during this phase (branch protection, this section's own evidence PR) — named explicitly below, not folded into "done."
+
+### Real PRs merged (#9–#15) — what each one actually fixed
+
+| PR | Merge commit | What it did |
+|---|---|---|
+| #9 | `25d22c1` | Initial Phase 12 implementation PR: spec, plan, `ci.yml`/`cd.yml`/`release.yml`, plus four real fix commits made *before* merge while iterating against real CI failures on this same PR — `d22d3de` (trivy-action needs a `v` prefix: `@0.36.0` → `@v0.36.0`, real CI error "unable to find version 0.36.0"), `0ee43c1`/`348bb8c` (real Trivy findings on the backend image traced to pip's own vendored `msgpack`, not the app's dependencies — see below), `aa3ddb9` (redesigned `build`/`scan` from a cache-reuse rebuild to an exact tarball-artifact handoff, since the rebuild pattern was observed to sometimes scan stale layer content instead of what `build` actually produced — this is a real deviation from the Plan's original `cache-from`-rebuild design for `scan`, made because running it surfaced ambiguity the Plan didn't anticipate, not a redesign for its own sake). The frontend Trivy gap (40 fixable HIGH/CRITICAL on `nginx:1.27-alpine`) was also resolved before this PR's merge — see its own subsection below. |
+| #10 | `46e98fc` | Real `cd.yml` failure: `helm install traefik ... --wait --timeout 120s` → "context deadline exceeded." Added a `Diagnose Traefik install` step (`if: failure()`) to actually see why, rather than guessing at a longer timeout. |
+| #11 | `0f652a3` | Diagnostic step (from #10) revealed the Traefik pod was `Ready` in ~3s — the real blocker was the chart's default `Service: LoadBalancer`, whose `EXTERNAL-IP` never leaves `<pending>` on `kind` (no cloud LB controller), and `helm --wait` waits on that Service too. First fix attempt: `--set service.type=ClusterIP`. |
+| #12 | `43c1fd7` | #11's fix was silently ignored by Helm — wrong values path. Confirmed the real path (`service.spec.type`, not `service.type`) by installing Helm locally and running `helm template traefik/traefik --set service.spec.type=ClusterIP` before pushing the corrected fix. This is what actually made the Traefik install succeed. |
+| #13 | `67e80b8` | Real failure: `kubectl apply -k k8s/overlays/prod` → `no matches for kind VerticalPodAutoscaler ... ensure CRDs are installed first`. `kind` ships no VPA CRDs (same as any non-GKE cluster). Added a step installing just the VPA CRD definitions, pinned to the VPA project's real, confirmed-to-exist tag `vertical-pod-autoscaler-1.8.0` (checked via `gh api repos/kubernetes/autoscaler/tags` before committing). |
+| #14 | `3ccc9de` | The docs/evidence/ red→green demo (see its own subsection below) — a real deliberately-failing commit, a real blocked merge, a real fix commit, a real unblocked merge. |
+| #15 | `b2c879b` | Added the two real PNG screenshots the Plan's `docs/evidence/` section names (`ci-red-blocked-merge.png`, `ci-green-merge-ready.png`) — a follow-up PR filed *after* #14 merged, because the screenshots weren't captured at the time #14's checks actually went red/green. See the disclosure below. |
+
+### Real bugs found only by running the pipeline, with root causes
+
+1. **`aquasecurity/trivy-action@0.36.0` missing its `v` prefix.** Real CI error: "unable to find version 0.36.0." Fixed to `@v0.36.0` (`d22d3de`).
+2. **`scan` job's cache-reuse rebuild sometimes scanned stale layer content, not what `build` actually produced.** Root-caused by ruling out `cache-from`/attestation/multi-manifest theories one at a time; fixed by switching `build` to export exact tarballs (`outputs: type=docker,dest=...`) via `actions/upload-artifact@v7`, and `scan` to `docker load` those exact tarballs via `actions/download-artifact@v8` (`aa3ddb9`) — a real, disclosed deviation from the Plan's original cache-reuse design for these two jobs, not a redesign for its own sake.
+3. **Real Trivy HIGH/CRITICAL findings on the backend image traced to `pip`'s own vendored `msgpack`, not the app's dependencies.** `pip` bundles private vendored copies of third-party libraries in its own `_vendor/` directory (for pip's internal use), physically present in site-packages twice in this Dockerfile — once via the builder stage's `python -m venv` (auto-seeds pip), once via the runtime stage's own base-image system Python. Two earlier attempted fixes (bumping `pip install --upgrade pip setuptools` in the Dockerfile; pinning `msgpack>=1.2.1` in `backend/pyproject.toml`) were fixing the wrong target — the app's own already-correct dependency, not pip's separate vendored copy — and did not resolve the real CI failures; both were reverted (`git diff` against `backend/pyproject.toml` is empty). Real fix (`348bb8c`, `0ee43c1`): `pip uninstall -y pip setuptools wheel` at the end of the builder stage's install command, plus `rm -rf /usr/local/lib/python3.12/site-packages/pip /usr/local/lib/python3.12/site-packages/pip-*.dist-info /usr/local/bin/pip3 /usr/local/bin/pip3.*` stripping the runtime stage's own unused system pip. Verified the app still works with pip removed (`python -c "import uvicorn, alembic, app.main"`, `alembic --version`) before pushing. Real scan result after the fix, from CI run 36335209268: `civicpulse-backend:ci (debian 13.7) | debian | 0 |` — zero HIGH/CRITICAL findings.
+4. **Traefik `helm install --wait` timeout (120s, then 300s) — not a timeout problem at all.** See PRs #10–#12 above. Root cause: chart's default `Service: LoadBalancer` type, which never gets an `EXTERNAL-IP` on `kind`; `--wait` blocks on it regardless of the pod's own real readiness (confirmed Ready in ~3s both times via the added diagnostic step). Real fix required finding the correct Helm value path (`service.spec.type`, confirmed locally via `helm template` before pushing) — the first attempted path (`service.type`) was silently ignored, not an error, which is itself worth naming since it could otherwise look like a fix that just needed more time.
+5. **`VerticalPodAutoscaler` CRD missing on `kind`.** See PR #13. `kind` ships no VPA CRDs by default. Fixed by installing just the CRD definitions (not the full recommender/updater/admission-controller stack — out of this phase's scope, which is proving the manifest set applies and rolls out, not reproducing Phase 11b's VPA recommendation loop), pinned to the real, verified tag `vertical-pod-autoscaler-1.8.0`.
+6. **`release.yml`'s first real run on `v0.1.0` failed: `ghcr.io/zain-shykh/civicpulse-backend:<sha>: not found`.** A genuine race condition, not a workflow bug: the tag was pushed immediately after PR #14 merged, before `cd.yml`'s own `build-push` job (triggered by that same merge, running concurrently) had finished pushing the SHA-tagged image. This is exactly `release.yml`'s documented "fail loudly, not silently" design working as intended (see its header comment, unchanged from the Plan). Fix: waited for the in-flight `cd.yml` run to complete (confirmed `build-push: success`), then `gh run rerun 36334434524` — succeeded on the second attempt. Confirmed via `gh api repos/Zain-Shykh/Civic-Pulse/actions/runs/36334434524/attempts/1` → `conclusion: failure`; the same run ID's current (rerun) state → `success`.
+
+### Trivy frontend gap — resolved per explicit decision, not silently patched
+
+Real Trivy scan against the originally-pinned `nginx:1.27-alpine` found 40 fixable HIGH/CRITICAL CVEs. Presented to the user as a real gap with options; decision made explicitly (not assumed): bump `frontend/Dockerfile`'s runtime base to `nginx:1.31-alpine` (the newest available Alpine-based nginx tag at the time, confirmed by checking real available tags — not a guess), and add `frontend/.trivyignore` scoped to exactly one CVE (`CVE-2026-93990`, libexpat, HIGH), dated and commented with why: upstream expat has a fix (2.8.5) so Trivy's DB marks it "fixed," but Alpine has not yet repackaged that fix for `alpine3.24` — there is no `apk upgrade` path that resolves it today. Not a wildcard, not a blanket severity downgrade — `ignore-unfixed: true` and `exit-code: '1'` are unchanged in `ci.yml`'s `scan` job, so any other real HIGH/CRITICAL with an available fix still fails the job.
+
+**Deviation from the assignment's literal text, disclosed:** the assignment's own §3.2 text names `nginx:1.27-alpine` specifically. This project's frontend base is `nginx:1.31-alpine` instead — a deliberate deviation, reasoned above, not an oversight. `docs/RUBRIC-CHECKLIST.md` lines citing the base image were updated in the same commit to the new tag and date (see below).
+
+Re-ran the exact `scan` job command locally against the rebuilt frontend image before committing, to confirm it genuinely passed rather than assuming: real result, zero HIGH/CRITICAL findings other than the one ignored CVE. Confirmed again in real CI (run 36335209268): `civicpulse-frontend:ci (alpine 3.24.2) | alpine | 0 |` — `.trivyignore`'s `CVE-2026-93990` entry loaded and applied (`trivyignores: frontend/.trivyignore` on the frontend scan step only, per Plan).
+
+### Branch protection — a real GitHub settings/API change made directly, not a file this repo tracks
+
+To produce genuine evidence for Verification-required item 3 (a real blocked merge button), branch protection on `main` was configured directly via `gh api --method PUT repos/Zain-Shykh/Civic-Pulse/branches/main/protection` (JSON body piped via `--input -`, since `-f`/`-F` flags don't support the nested `required_status_checks.checks[]` array — first attempt with flags failed with a schema error). This is a real, disclosed repository settings change, made by this session, not something any committed file in this repo controls or reverts. Current real state, confirmed via `gh api repos/Zain-Shykh/Civic-Pulse/branches/main/protection`:
+
+```json
+{
+  "required_status_checks": {
+    "strict": true,
+    "contexts": ["lint-and-type", "test-backend", "test-frontend", "build", "scan", "manifests", "integration"]
+  },
+  "enforce_admins": { "enabled": true }
+}
+```
+
+All seven `ci.yml` jobs are required checks; admin bypass is disabled. As a direct, real consequence, `main` now has commits reaching it only through merged, checks-gated PRs (#9–#15) — the `docs/RUBRIC-CHECKLIST.md` §5.3 row claiming "main untouched since the Phase 0 initial commit" is now stale and has been corrected below, since this phase is what changed that fact.
+
+### Verification-required — real evidence for each item
+
+1. **Real PR triggers `ci.yml`; all seven jobs run.** PR #9 (and #10–#15) each ran all seven jobs for real. Latest confirmed clean run: PR #15, run `36335209268` — `lint-and-type: pass`, `test-backend: pass`, `test-frontend: pass`, `build: pass`, `scan: pass`, `manifests: pass`, `integration: pass` (checked via `gh pr checks 15`, all seven terminal and passing).
+2. **Real measured coverage.** From CI run `36335209268`, `test-backend` job, `pytest --cov=app --cov-report=term-missing --cov-fail-under=65`:
+   ```
+   TOTAL                                 509     31    94%
+   Required test coverage of 65% reached. Total coverage: 93.91%
+   165 passed, 1 warning in 3.67s
+   ```
+   93.91%, well above the 65% gate — reported honestly, not adjusted to fit.
+3. **Deliberately-failing-test PR sequence (docs/evidence/), with a disclosure.** Real sequence on PR #14: commit `337dcae` broke `test_health_always_ok` (`assert resp.status_code == 999`) — real `test-backend` failure, `gh pr merge 14` really refused with "the base branch policy prohibits the merge" (`mergeStateStatus: BLOCKED`). Commit `6429003` reverted it — all seven checks passed (`mergeStateStatus: CLEAN`), merged for real (`3ccc9de`).
+   **Disclosed, not glossed over:** the two PNG screenshots the Plan names weren't captured at the moment PR #14's checks actually went red and green — I have no browser/screenshot tool, so at the time I substituted real CLI-captured state (`mergeStateStatus`, `gh pr merge`'s literal refusal text) and flagged the gap to the user. The user then captured the two screenshots manually and they were added in a follow-up PR (#15, merge `b2c879b`), committed to `docs/evidence/ci-red-blocked-merge.png` and `ci-green-merge-ready.png`. **One more real detail worth being accurate about:** because #14 was already merged by the time the screenshots were taken, what they capture is the Actions run's check state (a red X / green check on a completed workflow run), not literally the live PR merge-button widget mid-review as the Plan's step 2/4 describes — the underlying fact they document (test-backend red and blocking vs. green and passing) is the same real event, captured after the fact rather than in the moment.
+4. **Real merge to `main` triggers `cd.yml`.** Latest confirmed run: `36335813202` (triggered by PR #15's merge). All four jobs succeeded: `test-backend`, `test-frontend`, `build-push`, `deploy-k8s`.
+   - Real GHCR push: `ghcr.io/zain-shykh/civicpulse-backend:b2c879b3ca7577d1f4c3322e506c3ed7ed79914d` and `:latest` (digest `sha256:f618d692...`), `ghcr.io/zain-shykh/civicpulse-frontend:b2c879b3ca7577d1f4c3322e506c3ed7ed79914d` (digest `sha256:39a8cf00...`) — both lowercase-owner, both SHA-tagged.
+   - Real SBOM attached: `sbom-backend.spdx.json` / `sbom-frontend.spdx.json`, uploaded as workflow artifacts (`anchore/sbom-action@v0.24.2`).
+   - Real `kind` cluster stand-up, `kubectl rollout status`: `deployment "backend" successfully rolled out`, `deployment "frontend" successfully rolled out`.
+   - Real Ingress smoke test: root path returned the frontend's real `index.html`; `/api/complaints` returned real JSON (`{"items":[],"total":0,"page":1,"page_size":20}`).
+   - Real `kubectl get hpa -n civicpulse` output: `backend-hpa   Deployment/backend   cpu: <unknown>/60%   2   10   2   24s`. `<unknown>` for the CPU target is expected and disclosed, not an error: `kind` has no metrics-server installed (out of this phase's scope, which is proving the manifest set applies and the HPA object exists correctly — real HPA scaling behavior was already verified against a real metrics-server in Phase 11b's own As-Built).
+5. **GHCR visibility — the Plan's disclosed assumption turned out to be unnecessary.** The Plan assumed GHCR packages pushed via `GITHUB_TOKEN` default to private, requiring a one-time manual visibility toggle. Real check: anonymous, unauthenticated pulls against both packages succeed.
+   ```
+   backend manifest HTTP 200
+   frontend manifest HTTP 200
+   ```
+   (Bearer token obtained anonymously from `ghcr.io/token?scope=repository:zain-shykh/civicpulse-<image>:pull`, no credentials.) Both packages are public by default in this repo's real configuration — the manual toggle step named in the Plan and in `cd.yml`'s own comment was never actually performed, and was never actually needed. Stated plainly, not left looking like it was silently done.
+6. **Real `v0.1.0` tag, `release.yml` re-tags (not rebuilds).** Release published: https://github.com/Zain-Shykh/Civic-Pulse/releases/tag/v0.1.0 (published `2026-09-27T16:47:12Z`), auto-generated notes listing PRs #1–#14. Confirmed a manifest-list copy, not a rebuild, from run `36334434524`'s real log:
+   ```
+   #1 0.000 copying sha256:5b932dfc... from ghcr.io/zain-shykh/civicpulse-backend:3ccc9de... to ghcr.io/zain-shykh/civicpulse-backend
+   #1 0.000 copying sha256:448c3935... from ghcr.io/zain-shykh/civicpulse-frontend:3ccc9de... to ghcr.io/zain-shykh/civicpulse-frontend
+   ```
+   No Dockerfile build step anywhere in this run's log — `docker buildx imagetools create` performed exactly the manifest copy the Plan describes. (This run's first attempt failed for the real race-condition reason disclosed above; this log is from the successful rerun.)
+7. **`kubeconform -ignore-missing-schemas`, real CI result (not just the Plan-time local dry run).** From `manifests` job, run `36335209268`:
+   ```json
+   {"resources": [], "summary": {"valid": 15, "invalid": 0, "errors": 0, "skipped": 1}}
+   ```
+   Matches the Plan-time dry run exactly — the one `skipped` resource is the `VerticalPodAutoscaler` object, the disclosed, deliberate exception; every other rendered object validated clean.
+
+### Real deviations from the Plan, disclosed (per this phase's own "stop and flag it" instruction)
+
+- **`build`/`scan` job design** (already covered above): switched from the Plan's cache-reuse rebuild to an exact tarball-artifact handoff, because running the original design surfaced real scan-staleness ambiguity the Plan didn't anticipate.
+- **Frontend base image**: `nginx:1.31-alpine`, not the Plan's/assignment's literal `nginx:1.27-alpine` — real Trivy findings on `1.27`, decision made explicitly with the user, reasoned above.
+- **GHCR visibility manual step**: named as required in the Plan and in `cd.yml`'s own comment; running it for real showed it wasn't actually needed (packages were already public).
+- Everything else — the version table's pins, `services:`-based Postgres/Redis, the lowercase-owner step, the `curlimages/curl` readiness pattern with `-p civicpulse`, `release.yml`'s header comment and re-tag design, the `k8s/base`/`kustomization.yaml` non-goal (never touched; the image-tag edit happens only inside `deploy-k8s`'s own checkout, confirmed by `git status` showing no diff on those files after every run) — was implemented and verified exactly as written in the Plan.
+
+### Known gap carried forward, not part of this phase's own scope
+
+`dev` is currently one commit behind `origin/main`: PR #15's merge (`b2c879b`, `1dc0bd5`) landed on `main` directly (that's what a PR-to-`main` merge does) and has not yet been fast-forwarded onto `dev`. Flagged here rather than silently reconciled as part of this commit — reconciling it (a `dev` fast-forward/merge) is a separate housekeeping action, not part of Phase 12's own deliverables.

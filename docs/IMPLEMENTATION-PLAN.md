@@ -118,6 +118,8 @@ Split into two sub-phases because they have genuinely different risk profiles:
 
 ## Phase 12 — CI/CD
 
+**Status: done.** All three workflow files implemented, real-verified end to end (PRs #9–#15; `docs/specs/phase-12-ci-cd.md` As-Built). `main` is protected with all 7 `ci.yml` jobs as required status checks (real `gh api .../branches/main/protection` state, a settings change made directly, not tracked by any committed file). One open item, not part of this phase's own scope: `dev` is currently one commit behind `origin/main` (PR #15's merge landed on `main` only) — flagged as separate housekeeping, not reconciled here.
+
 **Depends on:** Phase 11 (cd.yml deploys manifests that must already exist) and Phase 5a at minimum (ci.yml needs `SimulatedTriage` for deterministic test runs).
 **Unlocks:** nothing further builds on this, but it's the last thing standing between "works on my machine" and "works from a clean clone/actions run."
 **Rubric:** I (20); closes out §5.3 deductions (publish/deploy jobs gated by `needs:`, no `:latest` deployed).

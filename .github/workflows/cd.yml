@@ -141,11 +141,20 @@ jobs:
       # own built-in ingress controller) — kind ships no ingress controller
       # at all, so one is installed here rather than patching the overlay
       # (Non-goal: no k8s/base or overlay changes beyond the image tag).
+      # --set service.type=ClusterIP: the chart's default Service type is
+      # LoadBalancer, whose external-IP never leaves <pending> on kind (no
+      # cloud LB controller) -- confirmed by running this for real: the pod
+      # itself was Ready in seconds, but `helm --wait` still hit "context
+      # deadline exceeded" at both 120s and 300s, because --wait also waits
+      # on the LoadBalancer Service, which can never satisfy that condition
+      # here. ClusterIP is also all the Ingress smoke test below needs
+      # (reached via kubectl port-forward, never a real external IP).
       - name: Install Traefik ingress controller
         run: |
           helm repo add traefik https://traefik.github.io/charts
           helm repo update
-          helm install traefik traefik/traefik --namespace traefik --create-namespace --wait --timeout 300s
+          helm install traefik traefik/traefik --namespace traefik --create-namespace \
+            --set service.type=ClusterIP --wait --timeout 120s
 
       - name: Diagnose Traefik install (only runs if the step above failed)
         if: failure()

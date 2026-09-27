@@ -1,0 +1,174 @@
+name: CD
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # Mirrors ci.yml's test-backend + test-frontend exactly, run again here on
+  # the merged result (per the assignment's own "the full suite again, on
+  # the merged result" — not skipped just because ci.yml already ran on the
+  # PR, since the merge commit itself can differ from either parent).
+  test-backend:
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.12-slim
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: civicpulse
+          POSTGRES_PASSWORD: civicpulse
+          POSTGRES_DB: civicpulse
+        options: >-
+          --health-cmd "pg_isready -U civicpulse -d civicpulse"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    env:
+      TRIAGE_PROVIDER: simulated
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+      - run: pip install -e ".[dev]"
+      - run: alembic upgrade head
+      - run: python -m app.scripts.seed
+      - run: pytest --cov=app --cov-report=term-missing --cov-fail-under=65
+
+  test-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - working-directory: frontend
+        run: |
+          npm ci
+          npm run test
+
+  build-push:
+    needs: [test-backend, test-frontend]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      owner: ${{ steps.lc.outputs.owner }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # GHCR/OCI image refs must be lowercase; this repo's real owner
+      # (Zain-Shykh) contains uppercase letters.
+      - id: lc
+        run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push backend
+        id: build-backend
+        uses: docker/build-push-action@v7
+        with:
+          context: ./backend
+          push: true
+          tags: |
+            ghcr.io/${{ steps.lc.outputs.owner }}/civicpulse-backend:${{ github.sha }}
+            ghcr.io/${{ steps.lc.outputs.owner }}/civicpulse-backend:latest
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Build and push frontend
+        id: build-frontend
+        uses: docker/build-push-action@v7
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            ghcr.io/${{ steps.lc.outputs.owner }}/civicpulse-frontend:${{ github.sha }}
+            ghcr.io/${{ steps.lc.outputs.owner }}/civicpulse-frontend:latest
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      - name: SBOM — backend
+        uses: anchore/sbom-action@v0.24.2
+        with:
+          image: ghcr.io/${{ steps.lc.outputs.owner }}/civicpulse-backend@${{ steps.build-backend.outputs.digest }}
+          artifact-name: sbom-backend.spdx.json
+
+      - name: SBOM — frontend
+        uses: anchore/sbom-action@v0.24.2
+        with:
+          image: ghcr.io/${{ steps.lc.outputs.owner }}/civicpulse-frontend@${{ steps.build-frontend.outputs.digest }}
+          artifact-name: sbom-frontend.spdx.json
+
+  # NOTE (disclosed, not silently assumed): GHCR packages pushed via
+  # GITHUB_TOKEN default to *private* regardless of repo visibility, and
+  # there is no imagePullSecrets anywhere in k8s/base/ — a private package
+  # means this job's kind cluster gets ErrImagePull on first run until the
+  # one-time manual GHCR "Change visibility -> Public" step (both packages)
+  # is done in GitHub Settings. See docs/specs/phase-12-ci-cd.md's Plan.
+  deploy-k8s:
+    needs: build-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: helm/kind-action@v1.15.0
+        with:
+          cluster_name: civicpulse
+
+      # Base manifests hardcode ingressClassName: traefik (matching k3d's
+      # own built-in ingress controller) — kind ships no ingress controller
+      # at all, so one is installed here rather than patching the overlay
+      # (Non-goal: no k8s/base or overlay changes beyond the image tag).
+      - name: Install Traefik ingress controller
+        run: |
+          helm repo add traefik https://traefik.github.io/charts
+          helm repo update
+          helm install traefik traefik/traefik --namespace traefik --create-namespace --wait --timeout 120s
+
+      - name: Set image tags in the CI job's own checkout (never committed)
+        working-directory: k8s/overlays/prod
+        run: |
+          kustomize edit set image \
+            civicpulse-backend=ghcr.io/${{ needs.build-push.outputs.owner }}/civicpulse-backend:${{ github.sha }} \
+            civicpulse-frontend=ghcr.io/${{ needs.build-push.outputs.owner }}/civicpulse-frontend:${{ github.sha }}
+
+      - run: kubectl apply -k k8s/overlays/prod
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/backend -n civicpulse --timeout=180s
+          kubectl rollout status deployment/frontend -n civicpulse --timeout=180s
+
+      - name: Ingress smoke test
+        run: |
+          kubectl port-forward -n traefik svc/traefik 8080:80 &
+          pf_pid=$!
+          for i in $(seq 1 15); do curl -sf -H "Host: civicpulse.local" http://localhost:8080/ >/dev/null && break; sleep 2; done
+          curl -sf -H "Host: civicpulse.local" http://localhost:8080/
+          curl -sf -H "Host: civicpulse.local" http://localhost:8080/api/complaints
+          kill "$pf_pid"
+
+      - name: HPA state
+        run: kubectl get hpa -n civicpulse

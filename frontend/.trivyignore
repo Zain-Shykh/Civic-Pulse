@@ -1,0 +1,8 @@
+# CVE-2026-93990 (libexpat, HIGH) — checked 2026-09-27 against nginx:1.31-alpine,
+# the newest available nginx alpine tag at the time. Trivy's own --ignore-unfixed
+# flag does not suppress this: upstream expat has a fix (2.8.5), so trivy's DB
+# marks it "fixed", but Alpine has not yet repackaged that fix for alpine3.24 —
+# there is no `apk upgrade` path that resolves it today. Scoped to this one CVE
+# only, not a blanket severity downgrade. Re-check and remove once Alpine ships
+# an updated libexpat package.
+CVE-2026-93990

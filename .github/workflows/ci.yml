@@ -98,8 +98,8 @@ jobs:
         with:
           context: ./backend
           push: false
-          load: false
           tags: civicpulse-backend:ci
+          outputs: type=docker,dest=/tmp/civicpulse-backend.tar
           cache-from: type=gha,scope=backend
           cache-to: type=gha,mode=max,scope=backend
       - name: Build frontend
@@ -107,33 +107,34 @@ jobs:
         with:
           context: ./frontend
           push: false
-          load: false
           tags: civicpulse-frontend:ci
+          outputs: type=docker,dest=/tmp/civicpulse-frontend.tar
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
+      # Uploaded as artifacts, not re-built with cache-from in the scan job:
+      # a cache-reuse rebuild was observed (Phase 12 implementation) to
+      # sometimes scan stale layer content instead of what this job just
+      # built. Exporting the exact built image and handing it to scan
+      # byte-for-byte removes that ambiguity entirely.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: civicpulse-images
+          path: /tmp/civicpulse-*.tar
+          retention-days: 1
 
   scan:
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v4
-      - name: Load backend image
-        uses: docker/build-push-action@v7
+      - uses: actions/download-artifact@v8
         with:
-          context: ./backend
-          push: false
-          load: true
-          tags: civicpulse-backend:ci
-          cache-from: type=gha,scope=backend
-      - name: Load frontend image
-        uses: docker/build-push-action@v7
-        with:
-          context: ./frontend
-          push: false
-          load: true
-          tags: civicpulse-frontend:ci
-          cache-from: type=gha,scope=frontend
+          name: civicpulse-images
+          path: /tmp
+      - name: Load images built by the build job
+        run: |
+          docker load -i /tmp/civicpulse-backend.tar
+          docker load -i /tmp/civicpulse-frontend.tar
       - name: Scan backend image
         uses: aquasecurity/trivy-action@v0.36.0
         with:

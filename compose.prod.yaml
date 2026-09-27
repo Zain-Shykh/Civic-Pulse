@@ -31,6 +31,21 @@ services:
           cpus: "0.5"
           memory: 128M
 
+  # One-shot schema bootstrap — mirrors k8s/base/backend.yaml's migrate
+  # initContainer (docs/specs/phase-11-kubernetes-manifests.md, Open Question
+  # 6). Same image as backend, never rebuilt (ADR 0003 — build once).
+  migrate:
+    image: ${GHCR_NAMESPACE}/civicpulse-backend:${IMAGE_TAG}
+    networks:
+      - internal
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
   backend:
     image: ${GHCR_NAMESPACE}/civicpulse-backend:${IMAGE_TAG}
     networks:
@@ -46,6 +61,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
     deploy:
       resources:

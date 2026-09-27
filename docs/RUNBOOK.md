@@ -10,6 +10,7 @@ Real operational procedures for this repository's actual current state — not a
 cp .env.example .env   # fill in real values — see .env.example's own comments
 docker compose up
 ```
+`docker compose up` is the whole story — a one-shot `migrate` service (`command: ["alembic", "upgrade", "head"]`, same image as `backend`) runs automatically first via `backend`'s `depends_on: migrate: condition: service_completed_successfully`. No separate migration step to remember.
 
 **Local, Docker Compose (prod-shaped, for testing `compose.prod.yaml` itself):**
 

@@ -145,7 +145,15 @@ jobs:
         run: |
           helm repo add traefik https://traefik.github.io/charts
           helm repo update
-          helm install traefik traefik/traefik --namespace traefik --create-namespace --wait --timeout 120s
+          helm install traefik traefik/traefik --namespace traefik --create-namespace --wait --timeout 300s
+
+      - name: Diagnose Traefik install (only runs if the step above failed)
+        if: failure()
+        run: |
+          kubectl get all -n traefik
+          kubectl describe pods -n traefik
+          kubectl logs -n traefik -l app.kubernetes.io/name=traefik --tail=200 || true
+          kubectl get events -n traefik --sort-by=.lastTimestamp
 
       - name: Set image tags in the CI job's own checkout (never committed)
         working-directory: k8s/overlays/prod

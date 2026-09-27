@@ -14,7 +14,7 @@ client = TestClient(app)
 
 def test_health_always_ok() -> None:
     resp = client.get("/health")
-    assert resp.status_code == 999  # deliberately broken for docs/evidence/ demo
+    assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
 
 

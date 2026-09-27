@@ -1,0 +1,217 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-type:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+      - name: Backend lint + type check
+        working-directory: backend
+        run: |
+          pip install -e ".[dev]"
+          ruff check app/ tests/
+          mypy app/
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Frontend lint + type check
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run lint
+          npm run typecheck
+
+  test-backend:
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.12-slim
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: civicpulse
+          POSTGRES_PASSWORD: civicpulse
+          POSTGRES_DB: civicpulse
+        options: >-
+          --health-cmd "pg_isready -U civicpulse -d civicpulse"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    env:
+      TRIAGE_PROVIDER: simulated
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+      - run: pip install -e ".[dev]"
+      - run: alembic upgrade head
+      - run: python -m app.scripts.seed
+      - run: pytest --cov=app --cov-report=term-missing --cov-fail-under=65
+
+  test-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - working-directory: frontend
+        run: |
+          npm ci
+          npm run test
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Build backend
+        uses: docker/build-push-action@v7
+        with:
+          context: ./backend
+          push: false
+          tags: civicpulse-backend:ci
+          outputs: type=docker,dest=/tmp/civicpulse-backend.tar
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+      - name: Build frontend
+        uses: docker/build-push-action@v7
+        with:
+          context: ./frontend
+          push: false
+          tags: civicpulse-frontend:ci
+          outputs: type=docker,dest=/tmp/civicpulse-frontend.tar
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+      # Uploaded as artifacts, not re-built with cache-from in the scan job:
+      # a cache-reuse rebuild was observed (Phase 12 implementation) to
+      # sometimes scan stale layer content instead of what this job just
+      # built. Exporting the exact built image and handing it to scan
+      # byte-for-byte removes that ambiguity entirely.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: civicpulse-images
+          path: /tmp/civicpulse-*.tar
+          retention-days: 1
+
+  scan:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: civicpulse-images
+          path: /tmp
+      - name: Load images built by the build job
+        run: |
+          docker load -i /tmp/civicpulse-backend.tar
+          docker load -i /tmp/civicpulse-frontend.tar
+      - name: Scan backend image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: civicpulse-backend:ci
+          severity: "HIGH,CRITICAL"
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Scan frontend image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: civicpulse-frontend:ci
+          severity: "HIGH,CRITICAL"
+          ignore-unfixed: true
+          exit-code: "1"
+          trivyignores: frontend/.trivyignore
+
+  manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate rendered manifests with kubeconform
+        run: |
+          kubectl kustomize k8s/overlays/prod | \
+            docker run --rm -i ghcr.io/yannh/kubeconform:v0.8.0-alpine \
+              -summary -output json -ignore-missing-schemas
+
+  integration:
+    runs-on: ubuntu-latest
+    env:
+      POSTGRES_USER: civicpulse
+      POSTGRES_PASSWORD: civicpulse
+      POSTGRES_DB: civicpulse
+      TRIAGE_PROVIDER: rules
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Bring up the dev compose stack
+        run: docker compose -p civicpulse up -d --build
+
+      - name: Run migrations
+        run: docker compose -p civicpulse exec -T backend alembic upgrade head
+
+      - name: Wait for backend readiness
+        run: |
+          docker run -d --name ready-check curlimages/curl:8.11.0 sleep 60
+          docker network connect civicpulse_internal ready-check
+          for i in $(seq 1 30); do
+            docker exec ready-check curl -sf http://backend:8000/ready && break
+            sleep 2
+          done
+
+      - name: Create a complaint
+        run: |
+          resp=$(curl -sf -X POST http://localhost:8080/api/complaints \
+            -H "Content-Type: application/json" \
+            -d '{"text": "Water supply has stopped completely in our street for two days.", "location": "Test District"}')
+          echo "$resp"
+          echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['id'] and d['category']; print(d['id'])" > complaint_id.txt
+
+      - name: Read the complaint back and assert category
+        run: |
+          id=$(cat complaint_id.txt)
+          resp=$(curl -sf http://localhost:8080/api/complaints/"$id")
+          echo "$resp"
+          echo "$resp" | python3 -c "import json, sys; d = json.load(sys.stdin); assert d['category'] == 'water', d"
+
+      - name: Assert /api/stats cache header goes MISS then HIT
+        run: |
+          first=$(curl -sf -D - -o /dev/null http://localhost:8080/api/stats | grep -i '^x-cache:')
+          echo "$first"
+          echo "$first" | grep -qi 'MISS'
+          second=$(curl -sf -D - -o /dev/null http://localhost:8080/api/stats | grep -i '^x-cache:')
+          echo "$second"
+          echo "$second" | grep -qi 'HIT'
+
+      - name: Teardown
+        if: always()
+        run: |
+          docker rm -f ready-check || true
+          docker compose -p civicpulse down -v

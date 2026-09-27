@@ -12,7 +12,7 @@ COPY index.html vite.config.ts tsconfig.json tsconfig.app.json tsconfig.node.jso
 COPY src ./src
 RUN npm run build
 
-FROM nginx:1.27-alpine AS runtime
+FROM nginx:1.31-alpine AS runtime
 
 # nginx:alpine already runs its master process as root but worker
 # processes as the unprivileged "nginx" user by default; we still pin

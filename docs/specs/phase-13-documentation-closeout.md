@@ -102,7 +102,9 @@ Files are written in dependency order — later files cite earlier ones, so the 
 
 ### What shipped
 
-All Deliverables landed: `docs/TRIAGE.md`, `scripts/check_submission.py`, `docs/RUNBOOK.md`, `docs/ENGINEERING-NOTES.md`, `docs/AI-USAGE.md`, `README.md` (full rewrite), and a final `docs/RUBRIC-CHECKLIST.md` pass — in that order, per the approved Plan. Commits: `2368059` (spec) → `8892c62` (plan) → `f65b56a` (implementation) → `a829625` (merge, reconciling concurrent frontend PRs #5/#7/#8 that landed on `origin/dev` mid-phase — disclosed here, not smoothed over) → `618fd4a` (fix 1) → `5136966` (fix 2) → this commit (As-Built).
+**Correction to this As-Built, made after the fact:** the paragraph below originally said "All Deliverables landed" while listing six of the seven — it omitted the demo-video shot-list, and no such file actually existed at that commit despite the Deliverables list (line 18) committing to one. That was a real gap, not a rename or a rewording — the shot-list is written now, as `docs/DEMO-SCRIPT.md`, in a dedicated follow-up commit to this phase.
+
+All Deliverables landed: `docs/TRIAGE.md`, `scripts/check_submission.py`, `docs/RUNBOOK.md`, `docs/ENGINEERING-NOTES.md`, `docs/AI-USAGE.md`, `README.md` (full rewrite), `docs/DEMO-SCRIPT.md` (demo-video shot-list, added after this As-Built was first written — see correction above), and a final `docs/RUBRIC-CHECKLIST.md` pass — in that order, per the approved Plan. Commits: `2368059` (spec) → `8892c62` (plan) → `f65b56a` (implementation) → `a829625` (merge, reconciling concurrent frontend PRs #5/#7/#8 that landed on `origin/dev` mid-phase — disclosed here, not smoothed over) → `618fd4a` (fix 1) → `5136966` (fix 2) → `5e93d4c` (this As-Built, originally) → this commit (demo-script gap fix).
 
 ### Two real, disclosed deviations from the "docs only" Non-goal
 

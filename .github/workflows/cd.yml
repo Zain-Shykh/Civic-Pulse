@@ -174,6 +174,20 @@ jobs:
             civicpulse-backend=ghcr.io/${{ needs.build-push.outputs.owner }}/civicpulse-backend:${{ github.sha }} \
             civicpulse-frontend=ghcr.io/${{ needs.build-push.outputs.owner }}/civicpulse-frontend:${{ github.sha }}
 
+      # k8s/base/vpa.yaml's VerticalPodAutoscaler is a CRD kind, not a
+      # built-in Kubernetes API -- kind ships no CRDs for it at all
+      # (confirmed by running this for real: `kubectl apply -k` failed with
+      # "no matches for kind VerticalPodAutoscaler ... ensure CRDs are
+      # installed first"). Installing just the CRDs (not the recommender/
+      # updater/admission-controller) is enough for the object to be
+      # accepted -- Phase 12's own scope is proving the manifest set applies
+      # and rolls out, not reproducing Phase 11b's real VPA recommendation
+      # loop. Pinned to the VPA project's real latest release tag, not
+      # `master`, matching this project's pinning discipline elsewhere.
+      - name: Install VPA CRDs (VerticalPodAutoscaler kind, not built into kind)
+        run: |
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes/autoscaler/vertical-pod-autoscaler-1.8.0/vertical-pod-autoscaler/deploy/vpa-v1-crd-gen.yaml
+
       - run: kubectl apply -k k8s/overlays/prod
 
       - name: Wait for rollout

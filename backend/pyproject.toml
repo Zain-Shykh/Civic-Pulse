@@ -14,6 +14,13 @@ dependencies = [
     "uvicorn[standard]==0.53.0",
     "google-genai==2.24.0",
     "prometheus-fastapi-instrumentator==8.1.0",
+    # Not a direct import anywhere in app/ — floor pin only, to force a safe
+    # version if pip's resolver ever pulls it in transitively (observed once,
+    # non-reproducibly, via a Phase 12 CI scan run: GHSA-6v7p-g79w-8964 in
+    # msgpack 1.1.2). No lockfile exists yet, so transitive-dependency
+    # resolution can drift between builds; this is the minimal disclosed fix,
+    # not a full pin-everything lockfile (that's a separate, bigger decision).
+    "msgpack>=1.2.1",
 ]
 
 [project.optional-dependencies]

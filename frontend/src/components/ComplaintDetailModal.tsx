@@ -1,6 +1,7 @@
 // Shows the full record for one complaint. Renders whatever it's given —
 // no fetching of its own; the caller (Dashboard) already has the full
 // Complaint object from listComplaints, so this stays purely presentational.
+import { useEffect } from "react";
 import type { Complaint } from "../api/types";
 import { Badge } from "./ui/badge";
 
@@ -10,6 +11,14 @@ interface ComplaintDetailModalProps {
 }
 
 export default function ComplaintDetailModal({ complaint, onClose }: ComplaintDetailModalProps) {
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"

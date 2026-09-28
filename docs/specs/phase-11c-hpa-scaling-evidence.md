@@ -92,7 +92,7 @@ Plateau: 55–63% at 4 replicas from `12m` through `16m` (matches the user's own
 
 **Job completion and teardown**, reported as real command output by the user during this session (no separate screenshot file for these): `kubectl get job k6-load-test -n civicpulse` showed `450/450` completions, `Complete`, ~15 minutes duration, before the cluster was torn down; `docker ps -a` afterward showed no `civicpulse` containers remaining.
 
-**Open item, not resolved here (outside this spec's Deliverables, flagged per Non-goals):** `docs/DEMO-SCRIPT.md` Scene 5 still cites Phase 11b's `2→3`/82% numbers, which are now one run behind this phase's fresher `2→4`/106% evidence. Whether Scene 5 should be updated to reference the newer screenshots, or intentionally left citing Phase 11b's data (both are real, either is defensible), is a call for the next session, not decided silently here.
+**Follow-up (decided after this As-Built landed, own small commit):** `docs/DEMO-SCRIPT.md` Scene 5 was updated to cite this phase's `2→4`/106% evidence (real screenshots + chart) instead of Phase 11b's `2→3`/82% prose-only numbers — the user's stated reasoning: citing numbers backed by committed screenshot/chart files is more defensible in a viva than prose alone, with no reason to prefer the stale version. Not a Deliverable of this spec; recorded here since it directly resolves the open item raised above.
 
 **Audit against the three named failure modes:**
 - *Silent decisions* — none: the daemon-access change, the max-pods refix, and the `106%` vs. `106–113%` correction are all disclosed above rather than folded in quietly.

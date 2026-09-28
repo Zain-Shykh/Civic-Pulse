@@ -123,26 +123,28 @@ at all.
 
 **On screen:** `kubectl get hpa -n civicpulse -w` during a k6 load run.
 
-**Commands** (the real captured scale-out —
-`docs/specs/phase-11b-failfast-and-vpa-verification.md:257-303`):
+**Commands** (the real captured scale-out, backed by committed screenshots
+and a chart, not prose alone —
+`docs/specs/phase-11c-hpa-scaling-evidence.md`'s As-Built):
 ```
 k6 run load/k6-script.js
 kubectl get hpa -n civicpulse -w
 ```
-Real prior output to reference on screen (Run 2, after the VPA-corrected
-request):
+Real prior output to reference on screen (`docs/evidence/hpa-scaling-scaleout.png`
+→ `docs/evidence/hpa-scaling-scaledown.png`; chart: `docs/evidence/replicas-vs-load-chart.svg`):
 ```
-backend-hpa   Deployment/backend   cpu: <unknown>/60%   2   10   2    31m
-backend-hpa   Deployment/backend   cpu: 82%/60%         2   10   3    32m
+backend-hpa   Deployment/backend   cpu: <unknown>/60%   2   10   2    3m16s
+backend-hpa   Deployment/backend   cpu: 106%/60%        2   10   2    4m1s
+backend-hpa   Deployment/backend   cpu: 106%/60%        2   10   4    4m16s
 ...
-backend-hpa   Deployment/backend   cpu: 2%/60%           2   10   2    51m
+backend-hpa   Deployment/backend   cpu: 2%/60%           2   10   2    22m
 ```
 **Narration:** under sustained load past the 60% CPU target, HPA scaled
-`2 → 3` within one 20s poll interval once real metrics were available
+`2 → 4` within one 20s poll interval once real metrics were available
 (`scaleUp.stabilizationWindowSeconds: 0`); after load stopped, it held the
-extra replica for the full 300s `scaleDown.stabilizationWindowSeconds`
-before releasing it back to the `minReplicas: 2` floor — fast to add
-capacity, deliberately slow to remove it.
+extra replicas for roughly the full 300s `scaleDown.stabilizationWindowSeconds`
+before stepping back down (`4 → 3 → 2`) to the `minReplicas: 2` floor — fast to
+add capacity, deliberately slow to remove it.
 
 ## Scene 6 — Rollback (4:00–4:50)
 

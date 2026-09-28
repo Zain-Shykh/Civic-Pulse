@@ -116,6 +116,8 @@ Split into two sub-phases because they have genuinely different risk profiles:
 
 **Phase 11b — Provider fail-fast + real HPA/VPA verification (added after Phase 11 shipped, not originally planned here):** a follow-up phase closing two gaps Phase 11 explicitly disclosed rather than fixed: `docs/OPEN-DECISIONS.md` #12 (no Kubernetes-manifest-level fail-fast for an empty `GEMINI_API_KEY`) via an application-level startup check in `backend/app/providers/triage/factory.py`, and Phase 11 As-Built's named VPA deviation (controller components never installed, no recommendation ever produced) via a reviewed controller-component install plus a real `load/k6-script.js` load test closing the assignment's own 5-step VPA loop end to end. See `docs/specs/phase-11b-failfast-and-vpa-verification.md`.
 
+**Phase 11c — HPA/VPA scaling evidence capture (addendum, added after Phase 11b shipped, not originally planned here):** Phase 11b's real HPA scale-out (`2→3`, 79–89% utilization) and VPA recommendation were captured as pasted output inside its own As-Built, but the k3d cluster was torn down afterward and the assignment's own repo layout (§5.7) and submission checklist (§5.8 item 6) name two durable `docs/evidence/` files — a `kubectl get hpa -w` capture and a replicas-vs-load chart — that were never actually committed. See `docs/specs/phase-11c-hpa-scaling-evidence.md`.
+
 ## Phase 12 — CI/CD
 
 **Status: done.** All three workflow files implemented, real-verified end to end (PRs #9–#15; `docs/specs/phase-12-ci-cd.md` As-Built). `main` is protected with all 7 `ci.yml` jobs as required status checks (real `gh api .../branches/main/protection` state, a settings change made directly, not tracked by any committed file). One open item, not part of this phase's own scope: `dev` is currently one commit behind `origin/main` (PR #15's merge landed on `main` only) — flagged as separate housekeeping, not reconciled here.
@@ -133,15 +135,23 @@ Split into two sub-phases because they have genuinely different risk profiles:
 ## Phase 13 — Documentation close-out
 
 **Depends on:** everything above existing in at least draft form — `PARALLEL-WORK-PLAN.md` already notes this slice "naturally trails the others."
-**Unlocks:** nothing — this is the last phase.
+**Unlocks:** Phase 14 (addendum, added after this phase shipped — not originally planned as a follow-on; this section's own "last phase" framing below is now superseded by that addendum).
 **Rubric:** J (15); also the thing that makes every other category's evidence checkable (`docs/RUBRIC-CHECKLIST.md` evidence column needs real file-and-line citations per §5.2).
 
 - README quickstart that actually works from a clean clone (§5.3 deduction if it doesn't — test this literally, in a fresh clone, not from the dev tree).
 - RUNBOOK, ENGINEERING-NOTES, AI-USAGE.
 - Any remaining ADRs (decisions made along the way that weren't pre-registered as ADRs 0001–0005).
 - Evidence screenshots for `docs/evidence/`.
-- Final pass over `docs/RUBRIC-CHECKLIST.md` — fill in only what's genuinely true, same discipline as every phase so far.
+- Final pass over `docs/RUBRIC-CHECKLIST.md` — fill in only what's genuinely true, same discipline as every phase so far. (This pass turned out incomplete for two Category C rows and two Category F rows — see Phase 14.)
 - **Done looks like:** a literal fresh `git clone` + README steps, on a machine with nothing pre-configured, produces a working local stack.
+
+## Phase 14 — Rubric checklist audit: Category C/F evidence pass (addendum, added after Phase 13 shipped, not originally planned here)
+
+**Depends on:** Phases 6/7 (Category C's actual code) and 5b/8 (Category F's actual code) — all already shipped; this phase only re-verifies and cites.
+**Unlocks:** nothing further builds on this.
+**Rubric:** no new marks — this closes an evidence-citation gap in already-claimed Category C (25) and Category F (25) rows, the same kind of gap Phase 13 closed for the rest of the checklist but missed for six specific rows (33, 34, 35, 39, 66, 68).
+
+Phase 13's own checklist pass left those six rows `[ ]` with a blank Evidence/file column, even though the underlying features (all nine endpoints, four-layer separation, the status state machine, the backend test suite, content-hash triage caching, `triage_latency_ms`) are already implemented. This phase re-verifies each independently against current code — including an actual local test run with coverage for row 39, against live throwaway Postgres/Redis containers — and updates the checklist with real citations. Documentation-only, no application code changes. See `docs/specs/phase-14-rubric-c-f-evidence-audit.md`.
 
 ## Sequencing notes
 

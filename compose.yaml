@@ -33,6 +33,25 @@ services:
           cpus: "0.5"
           memory: 128M
 
+  # One-shot schema bootstrap — mirrors k8s/base/backend.yaml's migrate
+  # initContainer (docs/specs/phase-11-kubernetes-manifests.md, Open Question
+  # 6). No environment automated this for Compose until now; a fresh
+  # `docker compose up` used to leave Postgres with zero tables.
+  migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: civicpulse-backend:dev
+    networks:
+      - internal
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
   backend:
     build:
       context: ./backend
@@ -51,6 +70,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     volumes:
       # Dev-only: mounts source for hot reload. Right here, wrong in
       # compose.prod.yaml — prod runs the image as built, not live source.

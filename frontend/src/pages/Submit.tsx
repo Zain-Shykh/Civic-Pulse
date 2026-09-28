@@ -17,9 +17,14 @@ export default function Submit() {
   const [reporterContact, setReporterContact] = useState("");
   const [state, run] = useApiCall(createComplaint);
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    await run({ text, location, reporter_contact: reporterContact || null });
+    const result = await run({ text, location, reporter_contact: reporterContact || null });
+    if (result.ok) {
+      setText("");
+      setLocation("");
+      setReporterContact("");
+    }
   }
 
   return (

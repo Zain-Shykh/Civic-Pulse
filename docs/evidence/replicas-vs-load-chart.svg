@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 460" font-family="monospace" font-size="12">
+  <title>backend-hpa replicas vs. CPU utilization — real kubectl get hpa -w capture, Phase 11c live run, 2026-09-28</title>
+  <desc>
+    Real data points read directly from docs/evidence/hpa-scaling-scaleout.png and
+    docs/evidence/hpa-scaling-scaledown.png. Straight lines connect actual captured
+    readings only; no data was invented between them.
+  </desc>
+  <rect width="820" height="460" fill="#ffffff"/>
+
+  <!-- Axes: x = elapsed minutes since watch start (0..22), y = percent (0..120) -->
+  <!-- Plot area: x in [70,780] px for t in [0,22] min; y in [40,380] px for value in [120,0] -->
+
+  <!-- Y gridlines / labels (CPU % axis, left) -->
+  <g stroke="#e0e0e0" stroke-width="1">
+    <line x1="70" y1="40" x2="780" y2="40"/>
+    <line x1="70" y1="97" x2="780" y2="97"/>
+    <line x1="70" y1="153" x2="780" y2="153"/>
+    <line x1="70" y1="210" x2="780" y2="210"/>
+    <line x1="70" y1="267" x2="780" y2="267"/>
+    <line x1="70" y1="323" x2="780" y2="323"/>
+    <line x1="70" y1="380" x2="780" y2="380"/>
+  </g>
+  <g fill="#555555" text-anchor="end">
+    <text x="65" y="44">120%</text>
+    <text x="65" y="101">100%</text>
+    <text x="65" y="157">80%</text>
+    <text x="65" y="214">60%</text>
+    <text x="65" y="271">40%</text>
+    <text x="65" y="327">20%</text>
+    <text x="65" y="384">0%</text>
+  </g>
+
+  <!-- 60% CPU target line (dashed) -->
+  <line x1="70" y1="210" x2="780" y2="210" stroke="#999999" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <text x="784" y="214" fill="#777777">60% target</text>
+
+  <!-- X axis (time in minutes) -->
+  <line x1="70" y1="380" x2="780" y2="380" stroke="#333333" stroke-width="1.5"/>
+  <g fill="#555555" text-anchor="middle">
+    <text x="70" y="400">0</text>
+    <text x="199" y="400">4m</text>
+    <text x="328" y="400">8m</text>
+    <text x="457" y="400">12m</text>
+    <text x="586" y="400">16m</text>
+    <text x="715" y="400">20m</text>
+    <text x="780" y="400">22m</text>
+  </g>
+  <text x="425" y="420" text-anchor="middle" fill="#333333">elapsed time (kubectl get hpa -w, real watch)</text>
+
+  <!-- Right axis: replica count 0..5 mapped onto same plot height -->
+  <g fill="#1a5fb4" text-anchor="start">
+    <text x="790" y="380">0</text>
+    <text x="790" y="312">1</text>
+    <text x="790" y="244">2</text>
+    <text x="790" y="176">3</text>
+    <text x="790" y="108">4</text>
+    <text x="790" y="40">5</text>
+  </g>
+
+  <!-- CPU utilization line (real points only; x = 70 + t_min*32.27, y = 380 - pct*2.83) -->
+  <!-- points (t_min, pct): (1.62,unk)(2.52,unk)(3.02,unk)(3.27,unk)(4.02,106)(4.27,106)
+       (12,57)(12,60)(12,56)(13,59)(13,58)(13,57)(14,60)(14,58)(14,59)(14,60)
+       (15,63)(15,56)(15,60)(16,55)(16,59)(16,60)(16,56)(17,48)(17,41)(17,12)(17,2)
+       (18,2)(19,2)(20,2)(21,2)(21,2)(22,2) -->
+  <polyline fill="none" stroke="#c01c28" stroke-width="2"
+    points="199,240 199,240 199,240 199,240 199,240
+            199,80 208,80
+            457,220 457,210 457,224
+            489,214 489,217 489,220
+            521,210 521,217 521,214 521,210
+            554,197 554,224 554,210
+            586,227 586,217 586,214 586,224
+            618,244 618,269 618,346 618,375
+            651,375 683,375 715,375 748,375 748,375 780,375"/>
+  <text x="230" y="70" fill="#c01c28">CPU % (measured, unknown until ~4m)</text>
+
+  <!-- Replica count step line (right axis: replicas r -> y = 380 - r*68) -->
+  <!-- points (t_min, replicas): (0,2)...(4.02,2)(4.27,4)...(21.5,4)(22,3)(22,2) -->
+  <polyline fill="none" stroke="#1a5fb4" stroke-width="2.5"
+    points="70,244 199,244 208,244 208,108
+            748,108 748,176 780,244"/>
+  <text x="250" y="118" fill="#1a5fb4">replicas (right axis)</text>
+
+  <!-- Markers for the real named events -->
+  <g fill="#000000">
+    <circle cx="70" cy="244" r="4"/>
+    <text x="76" y="234">idle: 2%, 2 replicas</text>
+
+    <circle cx="199" cy="80" r="4"/>
+    <circle cx="208" cy="80" r="4"/>
+    <text x="150" y="60">106%/60% (4m1s→4m16s): HPA fires, 2→4</text>
+
+    <circle cx="489" cy="210" r="3"/>
+    <text x="380" y="440">plateau 55–63% @ 4 replicas, 12m–16m (450-pod k6 Job running)</text>
+
+    <circle cx="618" cy="375" r="4"/>
+    <text x="560" y="360">drop to 2% at 17m</text>
+
+    <circle cx="748" cy="108" r="3"/>
+    <circle cx="748" cy="176" r="4"/>
+    <circle cx="780" cy="244" r="4"/>
+    <text x="600" y="120">held 4 until 22m (~300s window), then 4→3→2</text>
+  </g>
+</svg>

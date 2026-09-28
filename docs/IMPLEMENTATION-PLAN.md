@@ -135,15 +135,23 @@ Split into two sub-phases because they have genuinely different risk profiles:
 ## Phase 13 — Documentation close-out
 
 **Depends on:** everything above existing in at least draft form — `PARALLEL-WORK-PLAN.md` already notes this slice "naturally trails the others."
-**Unlocks:** nothing — this is the last phase.
+**Unlocks:** Phase 14 (addendum, added after this phase shipped — not originally planned as a follow-on; this section's own "last phase" framing below is now superseded by that addendum).
 **Rubric:** J (15); also the thing that makes every other category's evidence checkable (`docs/RUBRIC-CHECKLIST.md` evidence column needs real file-and-line citations per §5.2).
 
 - README quickstart that actually works from a clean clone (§5.3 deduction if it doesn't — test this literally, in a fresh clone, not from the dev tree).
 - RUNBOOK, ENGINEERING-NOTES, AI-USAGE.
 - Any remaining ADRs (decisions made along the way that weren't pre-registered as ADRs 0001–0005).
 - Evidence screenshots for `docs/evidence/`.
-- Final pass over `docs/RUBRIC-CHECKLIST.md` — fill in only what's genuinely true, same discipline as every phase so far.
+- Final pass over `docs/RUBRIC-CHECKLIST.md` — fill in only what's genuinely true, same discipline as every phase so far. (This pass turned out incomplete for two Category C rows and two Category F rows — see Phase 14.)
 - **Done looks like:** a literal fresh `git clone` + README steps, on a machine with nothing pre-configured, produces a working local stack.
+
+## Phase 14 — Rubric checklist audit: Category C/F evidence pass (addendum, added after Phase 13 shipped, not originally planned here)
+
+**Depends on:** Phases 6/7 (Category C's actual code) and 5b/8 (Category F's actual code) — all already shipped; this phase only re-verifies and cites.
+**Unlocks:** nothing further builds on this.
+**Rubric:** no new marks — this closes an evidence-citation gap in already-claimed Category C (25) and Category F (25) rows, the same kind of gap Phase 13 closed for the rest of the checklist but missed for six specific rows (33, 34, 35, 39, 66, 68).
+
+Phase 13's own checklist pass left those six rows `[ ]` with a blank Evidence/file column, even though the underlying features (all nine endpoints, four-layer separation, the status state machine, the backend test suite, content-hash triage caching, `triage_latency_ms`) are already implemented. This phase re-verifies each independently against current code — including an actual local test run with coverage for row 39, against live throwaway Postgres/Redis containers — and updates the checklist with real citations. Documentation-only, no application code changes. See `docs/specs/phase-14-rubric-c-f-evidence-audit.md`.
 
 ## Sequencing notes
 

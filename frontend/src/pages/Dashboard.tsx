@@ -15,7 +15,7 @@ import { useApiCall } from "../hooks/useApiCall";
 import ComplaintDetailModal from "../components/ComplaintDetailModal";
 import type { Complaint } from "../api/types";
 
-const PAGE_SIZE = 25;
+const PAGE_SIZE = 20;
 
 export default function Dashboard() {
   const [page, setPage] = useState(1);

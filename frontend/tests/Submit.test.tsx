@@ -73,4 +73,48 @@ describe("Submit view", () => {
 
     await waitFor(() => expect(screen.getByText(/Try again in 17s/)).toBeTruthy());
   });
+
+    it("clears the form fields after a successful submission", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse(201, {
+          id: "abc",
+          category: "roads",
+          priority: "high",
+          ai_summary: "Pothole reported",
+          triaged_by: "rules",
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    render(<Submit />);
+
+    await user.type(screen.getByLabelText(/text/i), "A pothole has appeared on the main road.");
+    await user.type(screen.getByLabelText(/location/i), "Test Location");
+    await user.click(screen.getByRole("button", { name: /submit/i }));
+
+    await waitFor(() => expect(screen.getByText(/Category: roads/)).toBeTruthy());
+    expect((screen.getByLabelText(/text/i) as HTMLTextAreaElement).value).toBe("");
+    expect((screen.getByLabelText(/location/i) as HTMLInputElement).value).toBe("");
+  });
+  
+    it("keeps the entered values when the submission fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse(400, { detail: [{ loc: ["body", "text"], msg: "too short", type: "value_error" }] }),
+      ),
+    );
+    const user = userEvent.setup();
+    render(<Submit />);
+
+    await user.type(screen.getByLabelText(/text/i), "short");
+    await user.type(screen.getByLabelText(/location/i), "loc");
+    await user.click(screen.getByRole("button", { name: /submit/i }));
+
+    await waitFor(() => expect(screen.getByText(/too short/)).toBeTruthy());
+    expect((screen.getByLabelText(/text/i) as HTMLTextAreaElement).value).toBe("short");
+    expect((screen.getByLabelText(/location/i) as HTMLInputElement).value).toBe("loc");
+  });
 });

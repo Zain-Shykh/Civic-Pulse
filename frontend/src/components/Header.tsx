@@ -27,16 +27,16 @@ export default function Header({ view, onNavigate }: { view: View; onNavigate: (
           </svg>
         </div>
         <span className="text-lg font-semibold">CivicPulse</span>
-        <nav className="ml-auto flex gap-1">
-          {NAV_ITEMS.map((item) => (
+        <nav aria-label="Main navigation" className="ml-auto flex gap-1">
+            {NAV_ITEMS.map((item) => (
             <Button
               key={item.view}
               variant="ghost"
               className={`rounded-none border-b-2 text-white hover:text-white ${
                 view === item.view ? "border-emblem" : "border-transparent"
               }`}
-              onClick={() => onNavigate(item.view)}
-            >
+              aria-current={view === item.view ? "page" : undefined}
+              onClick={() => onNavigate(item.view)}            >
               {item.label}
             </Button>
           ))}

@@ -88,6 +88,8 @@ Spec (§3.3, HPA deliverable), kept for reference: "generate load with k6 or hey
 
 **Residual risk, not eliminated by this decision:** Category A's partner-dependent line items (≥5 PRs with the partner's substantive review, the 35% commit-share floor, a real two-author merge conflict) still require the partner to actually contribute for a nontrivial stretch of time before submission — deciding "he'll join later" doesn't manufacture that history retroactively. If he joins late, those items may still need to be compressed into whatever time remains. Tracked in `docs/RUBRIC-CHECKLIST.md`.
 
+**2026-09-28 — this residual risk materialized once, not a new problem:** PR #28 (`dev`→`main`, merge commit `a4d428c`) needed to merge while Ahmad was unavailable to give the required review. `required_approving_review_count` on `main` was briefly relaxed 1→0 to let it merge solo, then restored to 1 immediately after (confirmed live today, still at 1 — `docs/evidence/branch-protection.png`). This is exactly the partner-unavailability risk this section already names, now with a first real occurrence rather than a hypothetical one. Full citation: `docs/RUBRIC-CHECKLIST.md` row 11.
+
 Original framing kept for reference — spec (§5.1) offers three configurations, none of which is "solo-with-a-later-joiner":
 - As written, 4 weeks, teams of 2.
 - Teams of 3, frontend owned by one member, PR floor raised to 7, commit floor to 30% each.

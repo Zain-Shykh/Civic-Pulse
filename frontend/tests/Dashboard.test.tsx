@@ -104,4 +104,22 @@ describe("Dashboard view", () => {
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).toBeNull();
   });
+
+    it("closes the detail modal when the close button is clicked", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce(jsonResponse(200, { items: [complaint], total: 1, page: 1, page_size: 20 })),
+    );
+    const user = userEvent.setup();
+    render(<Dashboard />);
+
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("open"));
+    await user.click(screen.getByText("Test Location"));
+    const dialog = screen.getByRole("dialog");
+
+    await user.click(within(dialog).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  
 });

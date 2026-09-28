@@ -121,5 +121,22 @@ describe("Dashboard view", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  
+    it("closes the detail modal when the backdrop is clicked", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce(jsonResponse(200, { items: [complaint], total: 1, page: 1, page_size: 20 })),
+    );
+    const user = userEvent.setup();
+    render(<Dashboard />);
+
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("open"));
+    await user.click(screen.getByText("Test Location"));
+    const dialog = screen.getByRole("dialog");
+
+    // The backdrop is the dialog's parent element (the dark overlay).
+    await user.click(dialog.parentElement as HTMLElement);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+
 });

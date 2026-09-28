@@ -1,5 +1,5 @@
 # Phase 15: Structured logging + graceful shutdown
-Status: not started
+Status: done
 Depends on: Phase 7 (routes/main.py wiring — where cross-cutting middleware lives), Phase 6 (service-layer log calls this must propagate through), Phase 5b (LLMTriage/redaction log calls this must propagate through), Phase 11 (k8s `terminationGracePeriodSeconds: 30` + `preStop: sleep 5` already in `k8s/base/backend.yaml`, the environment row 38's SIGTERM behavior runs inside)
 Reads first: `docs/RUBRIC-CHECKLIST.md` rows 37/38, `docs/CONTRACTS.md` (four-layer rule), `backend/app/main.py`, `backend/app/services/complaints.py`, `backend/app/providers/triage/llm.py`, `backend/app/providers/triage/redaction.py`
 
@@ -60,4 +60,103 @@ Close two real, disclosed Category C gaps for real: (1) every log line emitted b
 If anything here conflicts with `docs/CONTRACTS.md` or turns out underspecified once Plan drafting or implementation actually starts, stop and ask rather than silently resolving it.
 
 ## As-Built
-(Filled in after implementation, with real command output.)
+
+Status: done. Implementation commit `b57767f` on `dev`.
+
+### Lint / type-check
+
+```
+$ ruff check app/ tests/
+All checks passed!
+$ mypy app/
+Success: no issues found in 32 source files
+```
+
+(mypy is only ever run against `app/`, per `ci.yml`'s `lint-and-type` job — `tests/` is ruff-checked only, so `tests/_shutdown_test_app.py`'s loose typing was never a strict-mypy concern.)
+
+### Full suite, real throwaway containers (same pattern as Phase 14 — `postgres:16-alpine`/`redis:7-alpine`, not `compose.yaml`'s own services, which publish no host port by design)
+
+```
+$ docker run -d --name civicpulse-phase15-pg -e POSTGRES_USER=civicpulse -e POSTGRES_PASSWORD=civicpulse -e POSTGRES_DB=civicpulse -p 15432:5432 postgres:16-alpine
+$ docker run -d --name civicpulse-phase15-redis -p 15379:6379 redis:7-alpine
+$ alembic upgrade head
+INFO  [alembic.runtime.migration] Running upgrade  -> be5a6b3416a1, create complaints table
+$ python -m app.scripts.seed
+Seed complete: 36 new row(s) inserted, 0 already present.
+$ TRIAGE_PROVIDER=simulated pytest --cov=app --cov-report=term-missing --cov-fail-under=65
+...
+Name                                Stmts   Miss  Cover   Missing
+-----------------------------------------------------------------
+app/logging_context.py                 51      1    98%   56
+...
+TOTAL                                 563     32    94%
+Required test coverage of 65% reached. Total coverage: 94.32%
+======================= 170 passed, 2 warnings in 6.14s ========================
+```
+
+165 pre-existing + 5 new (170 total). Line 56 uncovered is `JsonFormatter.format()`'s `if record.exc_info:` branch — no test logs a real exception; not required for either row's marks, noted rather than silently left unexplained.
+
+### The two new files, verbose, on their own
+
+```
+$ TRIAGE_PROVIDER=simulated pytest tests/test_logging.py tests/test_graceful_shutdown.py -v
+tests/test_graceful_shutdown.py::TestGracefulShutdown::test_sigterm_drains_in_flight_request_before_exit PASSED [ 20%]
+tests/test_logging.py::TestJsonFormatter::test_formats_valid_json_with_request_id_and_extra_fields PASSED [ 40%]
+tests/test_logging.py::TestJsonFormatter::test_omits_request_id_outside_any_request_context PASSED [ 60%]
+tests/test_logging.py::TestRequestIdPropagation::test_completion_line_and_existing_fallback_warning_share_one_request_id PASSED [ 80%]
+tests/test_logging.py::TestRequestIdPropagation::test_two_separate_requests_get_different_request_ids PASSED [100%]
+======================== 5 passed, 2 warnings in 2.83s =========================
+```
+
+`test_completion_line_and_existing_fallback_warning_share_one_request_id` is the row-37 proof that matters most: it forces `services/complaints.py`'s pre-existing `logger.warning("triage_provider_raised_falling_back", ...)` to fire (via `SimulatedTriage(always_raise=True)`, the same technique `test_routes_complaints.py::TestMandatoryDeterminism` already uses) and asserts that warning's `request_id` is *exactly equal* to the completion line's — proving propagation into an untouched, pre-existing call site, not just a newly-written one.
+
+### Real deviation from the Plan, caught by actually running the test (disclosed, not smoothed over)
+
+First run of the SIGTERM test failed:
+
+```
+E           assert -15 == 0
+----------------------------- Captured stdout call -----------------------------
+{"timestamp": "2026-09-29T01:58:46", ..., "message": "request_completed", "request_id": "48ffe16b...", "method": "GET", "path": "/slow", "status_code": 200, "duration_ms": 2000}
+----------------------------- Captured stderr call -----------------------------
+INFO:     Shutting down
+INFO:     Waiting for connections to close. (CTRL+C to force quit)
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [2950411]
+```
+
+The drain itself was already correct — the response was genuinely received *after* SIGTERM was sent, with the right body and a real `200`, and uvicorn's own log shows a complete, orderly shutdown sequence. The test's own assumption was wrong: `proc.wait()` returned `-15` (`-signal.SIGTERM`), because uvicorn's `Server.capture_signals()` deliberately re-raises the original signal after a graceful shutdown finishes (real source, quoted in the Plan) — correct, standard Unix behavior so a supervisor sees "terminated by SIGTERM," not a plain `0` that would hide the fact it was asked to stop. Fixed the assertion to `returncode == -signal.SIGTERM` to match the real, correct behavior, with a comment explaining why in the test itself. Re-run: passed (above).
+
+This is the Plan's Open Question 2 empirically confirmed, not just source-read: the out-of-the-box default (`timeout_graceful_shutdown=None`) already drains in-flight requests correctly. No Dockerfile/compose graceful-shutdown flag was needed.
+
+### Live compose check
+
+```
+$ docker compose up -d --build
+ Container assign_1-backend-1 Healthy
+$ curl -s -X POST http://localhost:8080/api/complaints -H "Content-Type: application/json" -d '{"text":"Phase 15 live compose check...","location":"Test Ave"}'
+{"id":"23c0b82a-...","triaged_by":"rules", ...}
+$ docker compose logs backend --tail 20
+backend-1  | INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+backend-1  | INFO:     Application startup complete.
+backend-1  | {"timestamp": "2026-09-28T21:00:21", "level": "INFO", "logger": "app.request", "message": "request_completed", "request_id": "afa8952859ff4cf5972a3f645d08a96f", "method": "GET", "path": "/health", "status_code": 200, "duration_ms": 0}
+backend-1  | {"timestamp": "2026-09-28T21:00:27", "level": "INFO", "logger": "app.request", "message": "request_completed", "request_id": "ea41f6c89e2d43adae360c1bdbe034c4", "method": "POST", "path": "/api/complaints", "status_code": 201, "duration_ms": 47}
+```
+
+Real JSON on real stdout, and no `uvicorn.access`-style plain-text line appears anywhere in the log — confirmed suppressed. Deliberately did **not** re-derive the request_id/existing-call-site correlation here: `TRIAGE_PROVIDER=rules` in this compose stack's `.env` has no live-reachable forced-failure path, and `test_logging.py`'s exact-equality assertion is already a stronger, more precise proof of that specific claim than a log-tail read would be. Also did not attempt a live SIGTERM-during-slow-request check: every real endpoint under `TRIAGE_PROVIDER=rules` completes in 1–47ms, so there's no naturally slow real request to overlap a SIGTERM against — the Plan's own wording made this a conditional, "if practically reproducible" second data point, not a required one; the subprocess test (which exercises the identical middleware and identical `--no-access-log` uvicorn flag the real Dockerfile/compose use) stands as the verification for row 38.
+
+Teardown confirmed clean:
+```
+$ docker compose down
+$ docker rm -f civicpulse-phase15-pg civicpulse-phase15-redis
+$ docker ps -a --filter name=assign_1
+CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES
+(empty)
+```
+
+### Three-failure-modes audit
+
+- **Silent decisions:** none. Both Open Questions from the Spec were resolved explicitly (one by you, one by disclosed source investigation); the test-assertion fix above is disclosed, not silently patched.
+- **Unverified claims:** the "default already drains" claim is backed by both a real source quote (Plan) and a real passing subprocess test (here), not the source read alone. The "no uvicorn.access line" claim is backed by a real `docker compose logs` tail showing its absence, not an assumption from adding the flag.
+- **Undisclosed scope creep:** none — no other rubric row, no bonus item, no other log call site changed. `services/complaints.py`, `providers/triage/llm.py`, `providers/triage/redaction.py` are untouched, as planned.

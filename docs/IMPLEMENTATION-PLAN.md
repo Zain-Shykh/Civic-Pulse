@@ -148,10 +148,18 @@ Split into two sub-phases because they have genuinely different risk profiles:
 ## Phase 14 — Rubric checklist audit: Category C/F evidence pass (addendum, added after Phase 13 shipped, not originally planned here)
 
 **Depends on:** Phases 6/7 (Category C's actual code) and 5b/8 (Category F's actual code) — all already shipped; this phase only re-verifies and cites.
-**Unlocks:** nothing further builds on this.
+**Unlocks:** Phase 15 (addendum, added after this phase shipped — the two rows this phase found to be real code gaps, not documentation gaps, get their own implementation phase).
 **Rubric:** no new marks — this closes an evidence-citation gap in already-claimed Category C (25) and Category F (25) rows, the same kind of gap Phase 13 closed for the rest of the checklist but missed for six specific rows (33, 34, 35, 39, 66, 68).
 
 Phase 13's own checklist pass left those six rows `[ ]` with a blank Evidence/file column, even though the underlying features (all nine endpoints, four-layer separation, the status state machine, the backend test suite, content-hash triage caching, `triage_latency_ms`) are already implemented. This phase re-verifies each independently against current code — including an actual local test run with coverage for row 39, against live throwaway Postgres/Redis containers — and updates the checklist with real citations. Documentation-only, no application code changes. See `docs/specs/phase-14-rubric-c-f-evidence-audit.md`.
+
+## Phase 15 — Structured logging + graceful shutdown (addendum, added after Phase 14 shipped, not originally planned here)
+
+**Depends on:** Phase 7 (routes/main.py wiring), Phase 6 (service-layer log calls), Phase 5b (LLMTriage/redaction log calls), Phase 11 (k8s `terminationGracePeriodSeconds`/`preStop` already in place) — all already shipped.
+**Unlocks:** nothing further builds on this.
+**Rubric:** Category C rows 37 (3 marks, structured JSON logging + propagated `request_id`) and 38 (2 marks, SIGTERM drains in-flight requests) — real code gaps left deliberately unchecked by Phase 14 (which found them to be real gaps, not citation gaps, and explicitly excluded them from its own scope).
+
+Unlike Phase 14, this is real application code: a cross-cutting request-id/JSON-logging mechanism (kept out of `services/` per the four-layer rule — it's not business logic), and an actual subprocess-level SIGTERM test rather than a documentation assertion. See `docs/specs/phase-15-structured-logging-and-graceful-shutdown.md`.
 
 ## Sequencing notes
 

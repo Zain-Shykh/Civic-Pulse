@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -84,5 +84,24 @@ describe("Dashboard view", () => {
     render(<Dashboard />);
 
     await waitFor(() => expect(screen.getByText("No complaints match the current filters.")).toBeTruthy());
+  });
+
+  it("opens the detail modal on row click and closes it on Escape", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce(jsonResponse(200, { items: [complaint], total: 1, page: 1, page_size: 20 })),
+    );
+    const user = userEvent.setup();
+    render(<Dashboard />);
+
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("open"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    await user.click(screen.getByText("Test Location"));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText(complaint.text)).toBeTruthy();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });

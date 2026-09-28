@@ -127,4 +127,11 @@ Redis 7 does two jobs, deliberately.
 **Persistence.**
 > Enable AOF on a named volume. Then answer, in your notes: why does the cache need a volume when the whole point of a cache is that it can be rebuilt?
 
+**Answer:** the honest per-purpose breakdown is that two of the three things in this Redis instance don't actually need the volume, and one does.
+
+- The stats read-through cache (Job 1, 30 s TTL) and the rate-limiter counters (Job 2, 60 s fixed window, `rate_limit_window_seconds`) are both trivially rebuildable — losing them on restart costs at most a few seconds of extra DB reads or a reset rate-limit window, nothing worth persisting for.
+- The triage-result cache (`_triage_cache_key`, content-hash keyed, 24 h TTL — `backend/app/providers/cache.py`) is the one that actually matters. It exists specifically to avoid re-paying an LLM call for a duplicate complaint (same `text`+`location` hash) within that 24 h window. Gemini's free tier is rate- and quota-limited (`docs/OPEN-DECISIONS.md` #1 — 15 RPM / 1,000 RPD on the free tier); losing this cache to a plain restart means every complaint that would have been a cache hit in the next 24 h instead re-triggers a real Gemini call, burning real quota and adding real latency, for no reason other than the process happened to restart.
+
+Since all three jobs share one physical Redis process, "enable AOF" is an instance-level setting, not a per-key one — there's no way to persist only the triage cache and let the other two float free. So the volume is provisioned for the one workload that needs it (the triage cache), and the other two ride along on the same infrastructure at zero extra cost, which is exactly the "same infrastructure serving two [really three] purposes" framing already used above.
+
 **Related — triage result cache (§2.5, distinct from the stats cache above):** content-hash keyed, 24 h TTL, reduces duplicate-complaint inference cost. Same Redis instance, different key namespace/purpose — this is the "same infrastructure serving two [really three] purposes" point made in §1.3.

@@ -1,5 +1,5 @@
 # Phase 11c: HPA/VPA scaling evidence capture
-Status: implemented, pending As-Built verification write-up (spec + plan approved and resolved in the same pass, per direct human instruction — see Open Questions below for how)
+Status: done (spec, plan, implementation, and As-Built all landed per `docs/WORKFLOW.md`'s four-commit lifecycle — see Open Questions below for how the plan itself changed mid-flight)
 Depends on: Phase 11b (`docs/specs/phase-11b-failfast-and-vpa-verification.md`) — same tuned `k8s/base/hpa.yaml`/`vpa.yaml` config and VPA-corrected request, but this phase's evidence comes from its own genuinely fresh live run, not reused Phase 11b data (see Open Question 1, resolved below).
 Reads first: `docs/specs/phase-11b-failfast-and-vpa-verification.md`'s As-Built (real HPA/VPA numbers, lines 190–306); the assignment's §5.7 "Repository layout" (`docs/evidence/` comment: "screenshots: protection, conflict, blocked merge, hpa -w, scaling chart") and §5.8 "Submission" item 6 ("kubectl get hpa -w capture and your replicas-vs-load chart") verbatim; `docs/RUBRIC-CHECKLIST.md` line 90 (already `[x]`, citing Phase 11b's As-Built prose directly — this phase produces the durable file that row's evidence column currently lacks, not a re-derived analysis); `docs/DEMO-SCRIPT.md` Scene 5 (already cites the same Phase 11b data for the demo video).
 
@@ -48,4 +48,53 @@ Still the right call — no charting library is installed anywhere in this repo,
 If anything here conflicts with `docs/CONTRACTS.md`, the assignment's §5.7/§5.8 text, or is underspecified beyond what's captured in the Open Questions above, stop and ask — do not silently resolve.
 
 ## As-Built
-_Filled in after implementation._
+
+**Status: done.** All four Deliverables committed: `docs/evidence/hpa-scaling-idle.png`, `docs/evidence/hpa-scaling-scaleout.png`, `docs/evidence/hpa-scaling-scaledown.png` (`cb93317`), `docs/evidence/replicas-vs-load-chart.svg` (`cb93317`), and `docs/RUBRIC-CHECKLIST.md` line 90's evidence column (`cb93317`).
+
+**How the run happened, honestly:** this spec was drafted assuming reuse of Phase 11b's data was the only option, since this session's Docker daemon access was believed permanently blocked. Mid-session, the user supplied a working per-invocation workaround (`sg docker -c "<cmd>"` / `newgrp docker <<< "<cmd>"`), confirmed with real `docker ps` (empty container list, exit 0) and `docker version --format '{{.Server.Version}}'` → `29.8.0`. A fresh k3d cluster was then created and load-tested live — not a re-derivation of Phase 11b's numbers, a second, independent real run against the same tuned `k8s/base/hpa.yaml`/`vpa.yaml` config.
+
+**Real deviation hit and fixed, same class as Phase 11b's own:** the fresh cluster's default kubelet `max-pods` (110) capped concurrent k6 Job pods below what the load test needed. Fixed by recreating the cluster with `--k3s-arg '--kubelet-arg=max-pods=500@server:0'`, confirmed via `kubectl get node -o jsonpath='{.items[0].status.allocatable.pods}'` returning `500` before retrying — this is a cluster-creation-time flag, not committed state, so it isn't reflected in any manifest.
+
+**Real screenshot content, transcribed directly (not summarized) from each `.png`:**
+
+`hpa-scaling-idle.png` — one-shot `kubectl get hpa -n civicpulse`:
+```
+NAME         REFERENCE            TARGETS    MINPODS   MAXPODS   REPLICAS   AGE
+backend-hpa  Deployment/backend   cpu: 2%/60%   2         10        2       4m10s
+```
+
+`hpa-scaling-scaleout.png` — `kubectl get hpa -n civicpulse -w`:
+```
+NAME         REFERENCE            TARGETS              MINPODS  MAXPODS  REPLICAS  AGE
+backend-hpa  Deployment/backend   cpu: <unknown>/60%      2        10        2      97s
+backend-hpa  Deployment/backend   cpu: <unknown>/60%      2        10        2      2m31s
+backend-hpa  Deployment/backend   cpu: <unknown>/60%      2        10        2      3m1s
+backend-hpa  Deployment/backend   cpu: <unknown>/60%      2        10        2      3m16s
+backend-hpa  Deployment/backend   cpu: 106%/60%           2        10        2      4m1s
+backend-hpa  Deployment/backend   cpu: 106%/60%           2        10        4      4m16s
+```
+**Correction to the verbal summary that preceded this As-Built:** the peak utilization was reported as "106–113%" before the screenshots were reviewed directly. The actual captured evidence shows exactly `106%/60%` at both readings around the scale-out — there is no `113%` reading in the real capture. Corrected here rather than silently carried forward.
+
+`hpa-scaling-scaledown.png` — continuation of the same `-w` session:
+```
+backend-hpa  cpu: 57%/60%  4  12m      backend-hpa  cpu: 58%/60%  4  14m      backend-hpa  cpu: 55%/60%  4  16m
+backend-hpa  cpu: 60%/60%  4  12m      backend-hpa  cpu: 59%/60%  4  14m      backend-hpa  cpu: 59%/60%  4  16m
+backend-hpa  cpu: 56%/60%  4  12m      backend-hpa  cpu: 60%/60%  4  14m      backend-hpa  cpu: 60%/60%  4  16m
+backend-hpa  cpu: 59%/60%  4  13m      backend-hpa  cpu: 63%/60%  4  15m      backend-hpa  cpu: 56%/60%  4  16m
+backend-hpa  cpu: 58%/60%  4  13m      backend-hpa  cpu: 56%/60%  4  15m      backend-hpa  cpu: 48%/60%  4  17m
+backend-hpa  cpu: 57%/60%  4  13m      backend-hpa  cpu: 60%/60%  4  15m      backend-hpa  cpu: 41%/60%  4  17m
+                                                                                backend-hpa  cpu: 12%/60%  4  17m
+                                                                                backend-hpa  cpu: 2%/60%   4  17m
+backend-hpa  cpu: 2%/60%  4  18m (x2)  backend-hpa  cpu: 2%/60%  4  19m  backend-hpa  cpu: 2%/60%  4  20m
+backend-hpa  cpu: 2%/60%  4  21m (x2)  backend-hpa  cpu: 2%/60%  2  10  3  22m   backend-hpa  cpu: 2%/60%  2  10  2  22m
+```
+Plateau: 55–63% at 4 replicas from `12m` through `16m` (matches the user's own real-time narration: "held steady 55–63% at 4 replicas for several minutes"). Drop to 2% at `17m`. Held at 4 replicas from `17m` through `21m` — roughly 4–5 real minutes, consistent with the tuned `scaleDown.stabilizationWindowSeconds: 300`. Stepped down `4→3` then `3→2`, both readings recorded at the same rounded `22m` age — a fast but real two-step sequence, not an instant jump straight to `2`.
+
+**Job completion and teardown**, reported as real command output by the user during this session (no separate screenshot file for these): `kubectl get job k6-load-test -n civicpulse` showed `450/450` completions, `Complete`, ~15 minutes duration, before the cluster was torn down; `docker ps -a` afterward showed no `civicpulse` containers remaining.
+
+**Open item, not resolved here (outside this spec's Deliverables, flagged per Non-goals):** `docs/DEMO-SCRIPT.md` Scene 5 still cites Phase 11b's `2→3`/82% numbers, which are now one run behind this phase's fresher `2→4`/106% evidence. Whether Scene 5 should be updated to reference the newer screenshots, or intentionally left citing Phase 11b's data (both are real, either is defensible), is a call for the next session, not decided silently here.
+
+**Audit against the three named failure modes:**
+- *Silent decisions* — none: the daemon-access change, the max-pods refix, and the `106%` vs. `106–113%` correction are all disclosed above rather than folded in quietly.
+- *Unverified claims* — the three screenshot transcriptions were read directly from the `.png` files, not recalled from the earlier chat narration; the job-completion/teardown facts are disclosed as reported (not independently re-verified by this agent), since no cluster remained to re-check them against.
+- *Undisclosed scope creep* — none: `k8s/base/hpa.yaml`/`vpa.yaml`/`backend.yaml` untouched; `docs/DEMO-SCRIPT.md` deliberately left alone and flagged above rather than edited outside this spec's Deliverables.

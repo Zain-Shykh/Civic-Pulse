@@ -76,4 +76,13 @@ describe("Dashboard view", () => {
 
     await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("in_progress"));
   });
+   it("shows an empty-state message when no complaints match", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce(jsonResponse(200, { items: [], total: 0, page: 1, page_size: 20 })),
+    );
+    render(<Dashboard />);
+
+    await waitFor(() => expect(screen.getByText("No complaints match the current filters.")).toBeTruthy());
+  });
 });

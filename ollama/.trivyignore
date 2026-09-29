@@ -1,9 +1,13 @@
-# 43 HIGH CVEs (0 CRITICAL), checked 2026-09-29 against ollama/ollama
+# 40 unique HIGH CVEs (0 CRITICAL), checked 2026-09-29 against ollama/ollama
 # v0.34.4 — the real latest upstream release at the time (published
 # 2026-09-23, confirmed via GitHub's releases API); there is no newer tag
-# to pin to instead, so this isn't a pinning-discipline gap.
+# to pin to instead, so this isn't a pinning-discipline gap. (A raw Trivy
+# scan reports 43 findings, not 40 — 3 of these CVE IDs are cross-attributed
+# to two vendored packages each, e.g. a stdlib finding that x/net also
+# vendors; the 40 IDs below cover all of them, re-verified by re-scanning
+# with this file applied: 0 vulnerabilities remain.)
 #
-# All 43 are inside the statically-linked usr/bin/ollama binary itself —
+# All 40 are inside the statically-linked usr/bin/ollama binary itself —
 # vendored Go stdlib and modules (golang.org/x/crypto, x/net, x/mod,
 # x/text, x/image, github.com/buger/jsonparser) frozen at whatever
 # versions upstream's own v0.34.4 build used. Trivy's own --ignore-unfixed

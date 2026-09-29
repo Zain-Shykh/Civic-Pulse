@@ -11,7 +11,7 @@
 # is deliberately CPU-only (qwen2.5:0.5b, chosen for no-GPU laptop
 # performance — docs/specs/phase-16-ollama-triage-and-fallback-chain.md),
 # so those runner directories are stripped in this same build stage,
-# before they ever reach a layer that ships. Real resulting image: ~90MB,
+# before they ever reach a layer that ships. Real resulting image: ~211MB,
 # vs ~9.3GB upstream (confirmed, not estimated).
 FROM debian:bookworm-slim AS fetch
 ARG OLLAMA_VERSION=0.34.4

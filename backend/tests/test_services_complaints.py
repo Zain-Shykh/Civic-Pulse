@@ -153,6 +153,42 @@ class TestMandatoryDeterminism:
         finally:
             await _delete(created["id"])
 
+    async def test_used_fallback_true_for_a_non_rules_fallback_outcome(self) -> None:
+        """Phase 16 Plan point 1: a third instance of the blind-relabel bug,
+        found live while verifying the Gemini->Ollama fallback chain — this
+        field used to hardcode `== "rules:fallback"`, so a genuine `llm:
+        ollama` fallback event (active provider "llm:gemini", outcome "llm:
+        ollama") was silently reported as `used_fallback: False`, which also
+        fed the /metrics fallback counter (routes/complaints.py).
+        """
+
+        class _FakeGeminiThatAlwaysFallsBackToOllama:
+            name = "llm:gemini"
+
+            async def triage(self, text: str, location: str):
+                from app.providers.triage.base import Category, Priority, TriageResult
+
+                return TriageResult(
+                    category=Category.OTHER,
+                    priority=Priority.NORMAL,
+                    summary="stub",
+                    confidence=0.5,
+                    triaged_by="llm:ollama",
+                )
+
+        created = await services.submit_complaint(
+            _FakeGeminiThatAlwaysFallsBackToOllama(),
+            text="A complaint whose active provider differs from its outcome.",
+            location="Test Location",
+            reporter_contact=None,
+            client_ip=_TEST_CLIENT_IP,
+        )
+        try:
+            assert created["triaged_by"] == "llm:ollama"
+            assert created["used_fallback"] is True
+        finally:
+            await _delete(created["id"])
+
 
 class _CountingProvider:
     """Wraps a real TriageProvider and counts calls to triage() —

@@ -11,7 +11,7 @@ networks:
 volumes:
   pgdata: # PostgreSQL data directory — the durable one
   redisdata: # AOF persistence (docs/CONTRACTS.md, Redis persistence)
-  ollama_models: # model weights, so they aren't re-pulled on every up (Ollama not wired up yet)
+  ollama_models: # model weights (qwen2.5:0.5b), so they aren't re-pulled on every up — see `ollama`/`ollama-pull` below
 
 services:
   frontend:
@@ -65,6 +65,14 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379/0
       TRIAGE_PROVIDER: ${TRIAGE_PROVIDER}
+      # Never actually forwarded to backend before this fix — a real,
+      # pre-existing gap found while live-testing this phase's Gemini->Ollama
+      # fallback chain (TRIAGE_PROVIDER=llm's own GEMINI_API_KEY requirement,
+      # docs/adr/0001-triage-provider-interface.md, was silently unreachable
+      # via `docker compose up` even with a real key in .env). Empty string
+      # by default (matches `.env.example`'s commented-out placeholder;
+      # `factory.py`'s own fail-fast check is what catches an empty value).
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -125,3 +133,55 @@ services:
         limits:
           cpus: "0.5"
           memory: 256M
+
+  # Opt-in only (profiles: ["ollama"]) — inactive on a plain `docker compose
+  # up`, so CI's rules-mode integration job and the README quickstart pay
+  # nothing for this. Activate with `docker compose --profile ollama up`.
+  # `backend` has no depends_on on either service below, in either compose
+  # file — Ollama is optional-by-design (TRIAGE_PROVIDER-gated, and a
+  # fallback rung even when active), unlike `migrate` (docs/specs/phase-16-
+  # ollama-triage-and-fallback-chain.md's Plan, point 2). If a request needs
+  # Ollama before the pull finishes, OllamaTriage just sees the same
+  # unreachable-server failure it would see at any other time and falls back.
+  ollama:
+    build:
+      context: ./ollama
+      dockerfile: Dockerfile
+    image: civicpulse-ollama:dev
+    profiles: ["ollama"]
+    networks:
+      - internal # never gets egress, same segmentation posture as postgres/redis
+    volumes:
+      - ollama_models:/usr/share/ollama/.ollama
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2048M
+
+  # One-shot puller: runs its OWN throwaway local `ollama serve` against the
+  # SAME shared ollama_models volume `ollama` reads from, pulls the model
+  # into it, then exits — never talks to the `ollama` service over the
+  # network, so it never needs to join `internal` and stays edge-only
+  # (single-homed). Not just simpler: confirmed empirically that a container
+  # joining both `edge` and an `internal: true` network makes the real
+  # ollama binary's Go DNS resolver reliably fail external lookups
+  # (registry.ollama.ai) — reproduced repeatedly against this exact stack
+  # and again in isolation with throwaway networks, with `internal: true`
+  # as the only variable. See ollama/pull-model.sh for the full write-up.
+  # No depends_on on `ollama` either — it doesn't need that service running
+  # at all, only the shared volume.
+  ollama-pull:
+    build:
+      context: ./ollama
+      dockerfile: Dockerfile
+    image: civicpulse-ollama:dev
+    profiles: ["ollama"]
+    networks:
+      - edge
+    volumes:
+      - ollama_models:/usr/share/ollama/.ollama
+    entrypoint: ["/usr/local/bin/pull-model.sh"]
+    command: ["qwen2.5:0.5b"]
+    restart: "no"

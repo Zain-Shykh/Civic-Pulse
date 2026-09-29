@@ -111,6 +111,15 @@ jobs:
           outputs: type=docker,dest=/tmp/civicpulse-frontend.tar
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
+      - name: Build ollama
+        uses: docker/build-push-action@v7
+        with:
+          context: ./ollama
+          push: false
+          tags: civicpulse-ollama:ci
+          outputs: type=docker,dest=/tmp/civicpulse-ollama.tar
+          cache-from: type=gha,scope=ollama
+          cache-to: type=gha,mode=max,scope=ollama
       # Uploaded as artifacts, not re-built with cache-from in the scan job:
       # a cache-reuse rebuild was observed (Phase 12 implementation) to
       # sometimes scan stale layer content instead of what this job just
@@ -135,6 +144,7 @@ jobs:
         run: |
           docker load -i /tmp/civicpulse-backend.tar
           docker load -i /tmp/civicpulse-frontend.tar
+          docker load -i /tmp/civicpulse-ollama.tar
       - name: Scan backend image
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -150,6 +160,14 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
           trivyignores: frontend/.trivyignore
+      - name: Scan ollama image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: civicpulse-ollama:ci
+          severity: "HIGH,CRITICAL"
+          ignore-unfixed: true
+          exit-code: "1"
+          trivyignores: ollama/.trivyignore
 
   manifests:
     runs-on: ubuntu-latest

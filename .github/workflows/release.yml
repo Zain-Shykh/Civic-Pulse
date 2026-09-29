@@ -40,6 +40,9 @@ jobs:
           docker buildx imagetools create \
             --tag ghcr.io/${{ steps.lc.outputs.owner }}/civicpulse-frontend:${{ github.ref_name }} \
             ghcr.io/${{ steps.lc.outputs.owner }}/civicpulse-frontend:${{ github.sha }}
+          docker buildx imagetools create \
+            --tag ghcr.io/${{ steps.lc.outputs.owner }}/civicpulse-ollama:${{ github.ref_name }} \
+            ghcr.io/${{ steps.lc.outputs.owner }}/civicpulse-ollama:${{ github.sha }}
 
       - name: Generate release notes
         env:

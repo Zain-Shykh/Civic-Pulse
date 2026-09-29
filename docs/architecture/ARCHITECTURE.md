@@ -34,7 +34,7 @@ graph LR
     style edgeNet fill:#1a3a1a,color:#eee
 ```
 
-`backend` is drawn straddling both networks because it is a member of both — per §3.2, "backend joins both — it is the only service that bridges them." Postgres, Redis, and Ollama sit on `internal` only. Frontend sits on `edge` only, so `docker compose exec frontend ping database` fails by construction, satisfying the network-segmentation requirement (§3.2, and the −8 automatic deduction if violated).
+`backend` is drawn straddling both networks because it is the only service that bridges them — per §3.2, "backend joins both." Postgres, Redis, and Ollama (both the long-running server and the one-shot puller — see below) sit on `internal`/`edge` respectively, never both. Frontend sits on `edge` only, so `docker compose exec frontend ping database` fails by construction, satisfying the network-segmentation requirement (§3.2, and the −8 automatic deduction if violated).
 
 ## The LLM-egress trade-off (§3.2, §5.2 Q7)
 
@@ -48,7 +48,7 @@ This is deliberate, not incidental: if `LLMTriage`'s outbound call had to go thr
 
 `OllamaTriage` talks to a local Ollama server running its model weights entirely offline — no API key, no internet, no rate limit (per `docs/CONTRACTS.md`, AI layer). Unlike Gemini, it has no outbound-internet requirement at runtime, so it belongs on `internal` alongside Postgres and Redis, not on `edge`. The backend reaches it the same way it reaches Postgres/Redis: over the internal network, via the `TriageProvider` interface, indistinguishable at the call site from any other provider.
 
-One caveat worth naming, not solving here: pulling Ollama's model weights the *first* time needs internet access (§3.2, `ollama_models` volume note — "so you do not re-pull 800 MB on every up"). That's a one-time setup/build-time concern, not a runtime one, and doesn't change where the container sits at steady state; it's implementation detail for the Docker/Compose phase, not an architectural decision.
+Pulling Ollama's model weights (`qwen2.5:0.5b`, ~397 MB) the *first* time needs internet access — resolved in Phase 16 by a separate one-shot `ollama-pull` service. It does not bridge `edge`/`internal` to do this: it runs its own throwaway local `ollama serve` against the same `ollama_models` volume the real `ollama` service reads from, pulls the model directly into it, and exits — so it only ever needs `edge` (for registry egress), never `internal`. This isn't just simpler: a container joining both `edge` and `internal` (`internal: true`) was confirmed, empirically, to make the real `ollama` binary's own Go DNS resolver reliably fail external lookups (`registry.ollama.ai`) — a real Docker/Go interaction, not a flaky network, reproduced repeatedly and isolated down to `internal: true` as the only variable. See `docs/specs/phase-16-ollama-triage-and-fallback-chain.md` and `ollama/pull-model.sh` for the full write-up. Once pulled, cached in the volume so it isn't re-pulled on every `up`.
 
 ## Frontend runtime configuration
 

@@ -109,6 +109,18 @@ jobs:
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
 
+      - name: Build and push ollama
+        id: build-ollama
+        uses: docker/build-push-action@v7
+        with:
+          context: ./ollama
+          push: true
+          tags: |
+            ghcr.io/${{ steps.lc.outputs.owner }}/civicpulse-ollama:${{ github.sha }}
+            ghcr.io/${{ steps.lc.outputs.owner }}/civicpulse-ollama:latest
+          cache-from: type=gha,scope=ollama
+          cache-to: type=gha,mode=max,scope=ollama
+
       - name: SBOM — backend
         uses: anchore/sbom-action@v0.24.2
         with:
@@ -120,6 +132,12 @@ jobs:
         with:
           image: ghcr.io/${{ steps.lc.outputs.owner }}/civicpulse-frontend@${{ steps.build-frontend.outputs.digest }}
           artifact-name: sbom-frontend.spdx.json
+
+      - name: SBOM — ollama
+        uses: anchore/sbom-action@v0.24.2
+        with:
+          image: ghcr.io/${{ steps.lc.outputs.owner }}/civicpulse-ollama@${{ steps.build-ollama.outputs.digest }}
+          artifact-name: sbom-ollama.spdx.json
 
   # NOTE (disclosed, not silently assumed): GHCR packages pushed via
   # GITHUB_TOKEN default to *private* regardless of repo visibility, and

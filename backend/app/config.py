@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://civicpulse:civicpulse@postgres:5432/civicpulse"
     redis_url: str = "redis://redis:6379/0"
     gemini_api_key: str = ""
+    ollama_base_url: str = "http://ollama:11434"
     rate_limit_max: int = 10
     rate_limit_window_seconds: int = 60
 

@@ -13,36 +13,37 @@ SCREEN cues (e.g. `cue: "...four containers..."`) mark the point in the
 voiceover where that on-screen action should land; they are the same words
 as in the VOICEOVER block, repeated only so the two stay in sync at a glance.
 
-**Two things found while preparing this that need a real decision before
-recording — not silently patched:**
+**Two things found while preparing this were real inconsistencies, not
+nitpicks, and have since been fixed (both live-graded docs, not just
+video-adjacent):**
 
-1. **`docs/TRIAGE.md` is stale, not just Scene 3.** It currently states (line
-   44) that `OllamaTriage` is "a stub only... intentionally unimplemented,"
-   and (line 53) that `LLMTriage`'s fallback is hardcoded to `RuleBasedTriage`
-   with `triaged_by` unconditionally overwritten to `"rules:fallback"`. Both
-   are false as of Phase 16's As-Built: `OllamaTriage` is a real, fourth
-   implementation, and the fallback tag is now normalized rather than
-   overwritten (`docs/specs/phase-16-ollama-triage-and-fallback-chain.md`,
-   Plan point 1 / As-Built "Real deviation 4"). `docs/DEMO-SCRIPT.md`'s
-   existing Scene 3 narration cites this exact stale line ("`docs/TRIAGE.md`,
-   'Fallback to `RuleBasedTriage`'"), which is what triggered this find —
-   flagging per instruction rather than fixing it here, since that's a
-   separate documentation phase, not this deliverable.
-2. **A transcription inconsistency in the Phase 16 As-Built itself,
-   line 323.** The pasted live wired-fallback response shows
-   `"triaged_by":"llm:ollama","triage_latency_ms":1715,"used_fallback":false`
-   — but `used_fallback` is computed identically to `/api/meta/providers`'s
-   `fallback` flag (`services/complaints.py:110`, `result.triaged_by !=
-   provider.name`), and the very next block in that same As-Built section
-   (line 333) shows `"fallback":true` for the entry with the same
-   `latency_ms: 1715`. Confirmed against the code and against
-   `test_services_complaints.py::test_used_fallback_true_for_a_non_rules_fallback_outcome`
-   (asserts `is True` for exactly this active=`llm:gemini`/outcome=`llm:ollama`
-   case): the real value is `true`; the pasted `false` in that one JSON blob
-   is a transcription error in the As-Built, not a real code behavior. This
-   script does **not** quote that field's value from the curl blob for this
-   reason — it cites the `fallback: true` result and the passing test
-   instead, both of which are internally consistent.
+1. **`docs/TRIAGE.md` was stale, not just relative to Scene 3.** It stated
+   `OllamaTriage` was "a stub only... intentionally unimplemented," and that
+   `LLMTriage`'s fallback was hardcoded to `RuleBasedTriage` with `triaged_by`
+   unconditionally overwritten to `"rules:fallback"` — both false as of
+   Phase 16. Fixed: the doc now describes all four real implementations and
+   the actual three-rung `LLMTriage` → `OllamaTriage` → `RuleBasedTriage`
+   chain, with the tag-normalization fix explained (see the doc's "The four
+   real implementations" and "The fallback chain" sections). This script's
+   Scene 3 ON SCREEN cues and citations below already matched the corrected
+   version.
+2. **A transcription error in the Phase 16 As-Built itself, line 323** —
+   `"used_fallback":false` where the code (`services/complaints.py:110`) and
+   the next block's `"fallback":true` (line ~333, for the same 1715ms entry)
+   both said it should be `true`. Fixed directly in that As-Built, with a
+   note there explaining the correction. This script always cited the
+   internally-consistent values (`fallback: true`, the passing
+   `TestWiredFallbackChain` test) rather than the one wrong field, so no
+   change was needed here.
+
+**One further staleness this surfaced, not yet fixed:** `docs/DEMO-SCRIPT.md`
+itself (the shot-list, not this file) still cites the old `docs/TRIAGE.md`
+heading text ("`docs/TRIAGE.md`, 'Fallback to `RuleBasedTriage`'") in its own
+Scene 3 section, which no longer exists verbatim now that `TRIAGE.md` has
+been rewritten. That file's Scene 3 should be updated to match this script's
+rewritten version (or at minimum re-cite the new section header, "The
+fallback chain: `LLMTriage` → `OllamaTriage` → `RuleBasedTriage`") — flagged
+here rather than fixed, since it's outside this script's own scope.
 
 ---
 

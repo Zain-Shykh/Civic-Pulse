@@ -90,6 +90,8 @@ Spec (§3.3, HPA deliverable), kept for reference: "generate load with k6 or hey
 
 **2026-09-28 — this residual risk materialized once, not a new problem:** PR #28 (`dev`→`main`, merge commit `a4d428c`) needed to merge while Ahmad was unavailable to give the required review. `required_approving_review_count` on `main` was briefly relaxed 1→0 to let it merge solo, then restored to 1 immediately after (confirmed live today, still at 1 — `docs/evidence/branch-protection.png`). This is exactly the partner-unavailability risk this section already names, now with a first real occurrence rather than a hypothetical one. Full citation: `docs/RUBRIC-CHECKLIST.md` row 11.
 
+**2026-09-28 (again) — same relaxation, same cause, not a one-off:** PR #29 (`dev`→`main`, merge commit `73d175e`, merged 2026-09-28T21:42:08Z) merged the same way — zero human approving reviews (only the same Copilot quota-limit comment), Ahmad still unavailable. `required_approving_review_count` confirmed live today at `1` again, so this was the identical relax-then-restore pattern repeating, not a setting left off. Recorded here rather than silently treated as "already covered" by the first note, since two real occurrences is a different fact than one for anyone assessing this risk at submission time.
+
 Original framing kept for reference — spec (§5.1) offers three configurations, none of which is "solo-with-a-later-joiner":
 - As written, 4 weeks, teams of 2.
 - Teams of 3, frontend owned by one member, PR floor raised to 7, commit floor to 30% each.

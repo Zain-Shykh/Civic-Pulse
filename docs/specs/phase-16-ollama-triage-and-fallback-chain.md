@@ -320,8 +320,10 @@ Wired Gemini→Ollama fallback (`TRIAGE_PROVIDER=llm`, `GEMINI_API_KEY` delibera
 $ curl -X POST http://localhost:8080/api/complaints -d '{"text":"...transformer sparking near the park entrance.", ...}'
 {"triaged_by":"llm:ollama","category":"other","priority":"high",
  "ai_summary":"New complaint about a rare incident near the park entrance, suspected to be due to a transformer sparking.",
- "triage_latency_ms":1715,"used_fallback":false,"cache_hit":false}
+ "triage_latency_ms":1715,"used_fallback":true,"cache_hit":false}
 ```
+
+(Corrected from an earlier draft of this As-Built, which had `used_fallback:false` here — a transcription error, not a code bug: `used_fallback` is `result.triaged_by != provider.name` (`services/complaints.py:110`), and `active_provider` for this run is `llm:gemini` while the outcome is `llm:ollama`, so it must be `true` — exactly what the `/api/meta/providers` block right below already showed for this same request. Caught and fixed during `docs/DEMO-VOICEOVER-SCRIPT.md`'s preparation, which needed this value to be internally consistent to cite it on camera.)
 
 Real measured latency: **1.715s** (Gemini's fast-fail on an auth error + Ollama's real inference) — nowhere near the Plan's disclosed ≈26.5s worst case; that number was always a *worst*-case bound, not a typical one, and this confirms it wasn't understated.
 

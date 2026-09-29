@@ -36,14 +36,14 @@ video-adjacent):**
    `TestWiredFallbackChain` test) rather than the one wrong field, so no
    change was needed here.
 
-**One further staleness this surfaced, not yet fixed:** `docs/DEMO-SCRIPT.md`
-itself (the shot-list, not this file) still cites the old `docs/TRIAGE.md`
-heading text ("`docs/TRIAGE.md`, 'Fallback to `RuleBasedTriage`'") in its own
-Scene 3 section, which no longer exists verbatim now that `TRIAGE.md` has
-been rewritten. That file's Scene 3 should be updated to match this script's
-rewritten version (or at minimum re-cite the new section header, "The
-fallback chain: `LLMTriage` → `OllamaTriage` → `RuleBasedTriage`") — flagged
-here rather than fixed, since it's outside this script's own scope.
+3. **`docs/DEMO-SCRIPT.md`'s own Scene 3 was also stale**, once the above
+   fix landed — it still cited the old `docs/TRIAGE.md` heading text
+   ("Fallback to `RuleBasedTriage`") and described the old two-tier
+   Gemini-fails-straight-to-rules demonstration, no longer accurate now
+   that a third-tier `OllamaTriage` sits in between. Fixed: that scene now
+   matches this script's rewritten Scene 3 — the same live wired-fallback
+   commands, the same real evidence, and the corrected `docs/TRIAGE.md`
+   section-header citation.
 
 ---
 

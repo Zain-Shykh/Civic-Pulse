@@ -67,31 +67,42 @@ category, priority and a one-line summary, persisted and shown on the
 dashboard. Point at `triaged_by` and `used_fallback: false` in the response
 as the observability fields that prove which provider actually ran.
 
-## Scene 3 — Fallback (1:30–2:15)
+## Scene 3 — Fallback, the real three-rung cascade (1:30–2:15)
 
 **Speaker:** Partner A.
 
-**On screen:** a terminal call against a triage provider forced to fail,
+**On screen:** the `ollama` profile already running (started before
+recording — the model pull takes longer than this scene fits); a terminal
+with `GEMINI_API_KEY` deliberately broken; a `POST /api/complaints` call;
 then `GET /api/meta/providers`.
 
-**Commands** (the real fallback-counter demonstration —
-`docs/specs/phase-07b-metrics.md:291-298`):
+**Commands** (the real, live wired-fallback verification —
+`docs/specs/phase-16-ollama-triage-and-fallback-chain.md`'s As-Built, "Live
+end-to-end verification, full chain, real stack"):
 ```
-curl -s http://localhost:8080/api/meta/providers   # before
-curl -s -X POST http://localhost:8080/api/complaints -d '{...}'   # provider forced to fail
-curl -s http://localhost:8080/api/meta/providers   # after
+TRIAGE_PROVIDER=llm docker compose --profile ollama up -d --build   # GEMINI_API_KEY deliberately invalid
+curl -X POST http://localhost:8080/api/complaints -d '{"text":"...transformer sparking near the park entrance.", ...}'
+curl http://localhost:8080/api/meta/providers
 ```
 Real prior output to reference:
 ```
-before: 0.0
-POST status: 201 triaged_by: rules:fallback used_fallback: True
-after: 1.0
+{"triaged_by":"llm:ollama","category":"other","priority":"high", ...,
+ "triage_latency_ms":1715,"used_fallback":true,"cache_hit":false}
+
+{"active_provider":"llm:gemini",
+ "recent_outcomes":[{"provider":"llm:ollama","latency_ms":1715,"fallback":true}, ...]}
 ```
-**Narration:** the LLM call didn't just error out — `LLMTriage` retries once,
-then falls back to `RuleBasedTriage` and still returns a real `201`, tagging
-the row `rules:fallback` (`docs/TRIAGE.md`, "Fallback to `RuleBasedTriage`").
-`GET /api/meta/providers`'s `recent_outcomes` list (`docs/CONTRACTS.md` §2.2)
-is the live surface for spotting a rising fallback share in production.
+**Narration:** Gemini's call fails (invalid key), and `LLMTriage` falls
+through to its own fallback leg — a real local `OllamaTriage` call, not
+straight to rules — returning `triaged_by: llm:ollama` in 1.715s. `GET
+/api/meta/providers`'s `recent_outcomes` list (`docs/CONTRACTS.md` §2.2)
+confirms `fallback: true` for that outcome even while `active_provider` is
+still `llm:gemini` (`docs/TRIAGE.md`, "The fallback chain: `LLMTriage` →
+`OllamaTriage` → `RuleBasedTriage`"). A third rung exists below this — if
+Ollama also failed, it would drop to `RuleBasedTriage` — proven by
+`backend/tests/test_llm_triage.py`'s `TestWiredFallbackChain`, not staged
+live here (forcing two real failures back to back doesn't fit cleanly in
+one 45-second take).
 
 ## Scene 4 — Network isolation failing (2:15–3:00)
 

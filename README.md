@@ -80,7 +80,13 @@ CI/CD evidence (`docs/evidence/`):
 |---|---|
 | ![CI red, merge blocked](docs/evidence/ci-red-blocked-merge.png) | ![CI green, merge ready](docs/evidence/ci-green-merge-ready.png) |
 
-**Frontend screenshots (Submit / Dashboard / Stats) — disclosed gap, not silently omitted:** not yet captured. No browser/screenshot tool is available in this working session (same limitation named in `docs/specs/phase-12-ci-cd.md` and `docs/specs/phase-13-documentation-closeout.md`'s Open Question 2). To be added in a real follow-up commit once captured manually, the same pattern Phase 12's CI screenshots followed (PR #15).
+**Frontend screenshots (Submit / Dashboard / Stats):**
+
+| Submit | Dashboard | Stats |
+|---|---|---|
+| ![Submit view](docs/evidence/frontend-submit.png) | ![Dashboard view](docs/evidence/frontend-dashboard.png) | ![Stats view](docs/evidence/frontend-stats.png) |
+
+Captured in the real follow-up commit this gap was originally disclosed as needing (`7d894f5`), the same pattern Phase 12's CI screenshots followed (PR #15).
 
 ## Documentation map
 

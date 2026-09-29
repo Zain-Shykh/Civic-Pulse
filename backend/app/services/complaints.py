@@ -107,7 +107,7 @@ async def submit_complaint(
     await cache.invalidate_stats_cache()  # category counts + avg latency changed
     return {
         **created,
-        "used_fallback": result.triaged_by == "rules:fallback",
+        "used_fallback": result.triaged_by != provider.name,
         "cache_hit": cache_hit,
     }
 
@@ -150,7 +150,7 @@ async def get_meta_providers(provider: TriageProvider) -> dict[str, Any]:
             {
                 "provider": row["triaged_by"],
                 "latency_ms": row["triage_latency_ms"],
-                "fallback": row["triaged_by"] == "rules:fallback",
+                "fallback": row["triaged_by"] != provider.name,
             }
             for row in outcomes
         ],

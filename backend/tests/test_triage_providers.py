@@ -14,6 +14,8 @@ import pytest
 from app.config import settings
 from app.providers.triage.base import Category, Priority, TriageResult
 from app.providers.triage.factory import get_triage_provider
+from app.providers.triage.llm import LLMTriage
+from app.providers.triage.ollama import OllamaTriage
 from app.providers.triage.rules import RuleBasedTriage
 from app.providers.triage.simulated import SimulatedTriage
 from app.scripts.seed import _COMPLAINTS
@@ -102,16 +104,24 @@ class TestFactory:
         with pytest.raises(KeyError):
             get_triage_provider()
 
-    def test_factory_fails_fast_on_not_yet_implemented_ollama(self, monkeypatch):
+    def test_factory_resolves_ollama(self, monkeypatch):
         monkeypatch.setenv("TRIAGE_PROVIDER", "ollama")
-        with pytest.raises(KeyError):
-            get_triage_provider()
+        provider = get_triage_provider()
+        assert isinstance(provider, OllamaTriage)
+        assert provider.name == "llm:ollama"
 
     def test_factory_fails_fast_on_llm_provider_with_empty_api_key(self, monkeypatch):
         monkeypatch.setenv("TRIAGE_PROVIDER", "llm")
         monkeypatch.setattr(settings, "gemini_api_key", "")
         with pytest.raises(RuntimeError):
             get_triage_provider()
+
+    def test_factory_wires_ollama_as_llm_fallback(self, monkeypatch):
+        monkeypatch.setenv("TRIAGE_PROVIDER", "llm")
+        monkeypatch.setattr(settings, "gemini_api_key", "fake-test-key")
+        provider = get_triage_provider()
+        assert isinstance(provider, LLMTriage)
+        assert isinstance(provider._fallback, OllamaTriage)
 
 
 class TestRuleBasedTriageAgainstSeedFixtures:

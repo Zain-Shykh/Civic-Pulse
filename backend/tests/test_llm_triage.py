@@ -16,6 +16,7 @@ from google.genai import types
 from app.providers.triage.base import Category, Priority, TriageResult
 from app.providers.triage.factory import get_triage_provider
 from app.providers.triage.llm import LLMTriage
+from app.providers.triage.ollama import OllamaTriage
 from app.providers.triage.redaction import redact
 from app.scripts.seed import _COMPLAINTS
 
@@ -281,6 +282,79 @@ class TestRedactionPatterns:
     def test_obfuscated_and_missing_tld_emails_are_known_misses(self):
         assert "test@example" in redact("email me at test@example")
         assert "[at]" in redact("reach me at ahmed [at] gmail [dot] com")
+
+
+def _make_ollama_fallback(handler) -> OllamaTriage:
+    client = httpx.AsyncClient(
+        base_url="http://ollama:11434", transport=httpx.MockTransport(handler)
+    )
+    return OllamaTriage(base_url="http://ollama:11434", client=client)
+
+
+class TestWiredFallbackChain:
+    """Phase 16 Plan point 1: the fallback tag must be normalized, not
+    overwritten — `llm:ollama` on Ollama success, `rules:fallback` only when
+    Ollama's own fallback to rules fired.
+    """
+
+    async def test_gemini_failure_falls_through_to_ollama_success(self, monkeypatch):
+        def gemini_handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503, json=_error_body(503, "UNAVAILABLE"))
+
+        def ollama_handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "message": {
+                        "role": "assistant",
+                        "content": json.dumps(
+                            {
+                                "category": "water",
+                                "priority": "high",
+                                "summary": "t",
+                                "confidence": 0.8,
+                            }
+                        ),
+                    }
+                },
+            )
+
+        monkeypatch.setattr("app.providers.triage.llm.asyncio.sleep", _no_sleep)
+        provider = LLMTriage(
+            api_key="fake-test-key",
+            http_options=types.HttpOptions(
+                httpx_async_client=httpx.AsyncClient(transport=httpx.MockTransport(gemini_handler)),
+                timeout=10_000,
+            ),
+            fallback=_make_ollama_fallback(ollama_handler),
+        )
+
+        result = await provider.triage("Water supply stopped three days ago", "Karachi")
+
+        assert result.triaged_by == "llm:ollama"  # not blindly relabeled to rules:fallback
+        assert result.category == Category.WATER
+
+    async def test_gemini_and_ollama_both_fail_yields_rules_fallback(self, monkeypatch):
+        def gemini_handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503, json=_error_body(503, "UNAVAILABLE"))
+
+        def ollama_handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(500, json={"error": "synthetic internal error"})
+
+        monkeypatch.setattr("app.providers.triage.llm.asyncio.sleep", _no_sleep)
+        provider = LLMTriage(
+            api_key="fake-test-key",
+            http_options=types.HttpOptions(
+                httpx_async_client=httpx.AsyncClient(transport=httpx.MockTransport(gemini_handler)),
+                timeout=10_000,
+            ),
+            fallback=_make_ollama_fallback(ollama_handler),
+        )
+
+        result = await provider.triage("Water supply stopped three days ago", "Karachi")
+
+        assert result.triaged_by == "rules:fallback"
+        assert result.category == Category.WATER  # RuleBasedTriage's own classification
 
 
 class TestFactoryResolvesLLM:

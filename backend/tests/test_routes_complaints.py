@@ -183,6 +183,48 @@ class TestMetaAndStats:
         assert "counts_by_status" in body
         assert "average_triage_latency_ms" in body
 
+    async def test_fallback_flag_is_outcome_differs_from_active_provider(
+        self, client: TestClient
+    ) -> None:
+        """Phase 16 Plan point 1's second bug fix: `fallback` must be true for
+        any outcome that differs from the *active* provider's name, not just
+        the literal string "rules:fallback" — otherwise a genuine `llm:ollama`
+        fallback event would be silently reported as `fallback: false`.
+        """
+        app.dependency_overrides[get_triage_provider] = lambda: SimulatedTriage()
+        matching = await repository.create(
+            complaint_text="Fallback-flag test complaint, matches active provider.",
+            location="Test Location",
+            reporter_contact=None,
+            category="water",
+            priority="normal",
+            ai_summary="test",
+            triaged_by="simulated",
+            triage_latency_ms=1,
+        )
+        differing = await repository.create(
+            complaint_text="Fallback-flag test complaint, an llm:ollama outcome.",
+            location="Test Location",
+            reporter_contact=None,
+            category="water",
+            priority="normal",
+            ai_summary="test",
+            triaged_by="llm:ollama",
+            triage_latency_ms=1,
+        )
+        try:
+            response = client.get("/api/meta/providers")
+            assert response.status_code == 200
+            body = response.json()
+            assert body["active_provider"] == "simulated"
+            by_id = {row["provider"]: row for row in body["recent_outcomes"]}
+            assert by_id["simulated"]["fallback"] is False
+            assert by_id["llm:ollama"]["fallback"] is True
+        finally:
+            await _delete(matching["id"])
+            await _delete(differing["id"])
+            app.dependency_overrides.clear()
+
 
 class TestMandatoryDeterminism:
     """CONTRACTS.md §2.5: 'given a provider that always raises, POST

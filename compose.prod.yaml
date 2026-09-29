@@ -12,7 +12,7 @@ networks:
 volumes:
   pgdata:
   redisdata:
-  ollama_models:
+  ollama_models: # model weights (qwen2.5:0.5b) — see `ollama`/`ollama-pull` below
 
 services:
   frontend:
@@ -112,3 +112,34 @@ services:
           cpus: "0.5"
           memory: 256M
     # No published port here — redis is reachable only from `internal`.
+
+  # Always active in prod (the automatic Gemini->Ollama fallback cascade is
+  # live here) — no `profiles:` gate, unlike compose.yaml (dev). `backend`
+  # still has no depends_on on either service: gating a real deploy of the
+  # primary Gemini-backed path on a slow/unreachable Ollama registry would be
+  # a worse availability trade than the one this design avoids for CI
+  # (docs/specs/phase-16-ollama-triage-and-fallback-chain.md's Plan, point 2).
+  ollama:
+    image: ${GHCR_NAMESPACE}/civicpulse-ollama:${IMAGE_TAG}
+    networks:
+      - internal
+    volumes:
+      - ollama_models:/usr/share/ollama/.ollama
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2048M
+
+  # See compose.yaml's identical service for why this is edge-only,
+  # single-homed, and has no depends_on on `ollama`.
+  ollama-pull:
+    image: ${GHCR_NAMESPACE}/civicpulse-ollama:${IMAGE_TAG}
+    networks:
+      - edge
+    volumes:
+      - ollama_models:/usr/share/ollama/.ollama
+    entrypoint: ["/usr/local/bin/pull-model.sh"]
+    command: ["qwen2.5:0.5b"]
+    restart: "no"

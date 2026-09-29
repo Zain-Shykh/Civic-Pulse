@@ -156,10 +156,18 @@ Phase 13's own checklist pass left those six rows `[ ]` with a blank Evidence/fi
 ## Phase 15 — Structured logging + graceful shutdown (addendum, added after Phase 14 shipped, not originally planned here)
 
 **Depends on:** Phase 7 (routes/main.py wiring), Phase 6 (service-layer log calls), Phase 5b (LLMTriage/redaction log calls), Phase 11 (k8s `terminationGracePeriodSeconds`/`preStop` already in place) — all already shipped.
-**Unlocks:** nothing further builds on this.
+**Unlocks:** Phase 16 (addendum, added after this phase shipped — not originally planned as a follow-on).
 **Rubric:** Category C rows 37 (3 marks, structured JSON logging + propagated `request_id`) and 38 (2 marks, SIGTERM drains in-flight requests) — real code gaps left deliberately unchecked by Phase 14 (which found them to be real gaps, not citation gaps, and explicitly excluded them from its own scope).
 
 Unlike Phase 14, this is real application code: a cross-cutting request-id/JSON-logging mechanism (kept out of `services/` per the four-layer rule — it's not business logic), and an actual subprocess-level SIGTERM test rather than a documentation assertion. See `docs/specs/phase-15-structured-logging-and-graceful-shutdown.md`.
+
+## Phase 16 — Real OllamaTriage: standalone provider + LLMTriage's automatic fallback rung (addendum, added after Phase 15 shipped, not originally planned here)
+
+**Depends on:** Phase 5b (`LLMTriage`, `redaction.py`), Phase 6 (`services/complaints.py`'s fallback/observability wiring), Phase 7 (`GET /api/meta/providers`) — all already shipped.
+**Unlocks:** nothing further builds on this.
+**Rubric:** row 63 ("≥3 working implementations selected by environment variable") — closes to a genuine 4; also the assignment's own §2.5 table, which lists `OllamaTriage` as required, not optional.
+
+`OllamaTriage` (`ollama.py`) was a deliberate stub since Phase 5b (that spec's Open Question 1), tracked as an open gap, not silently dropped. This phase makes it real: a working `TriageProvider` against a local Ollama server (`qwen2.5:0.5b`, CPU-sized), selectable directly via `TRIAGE_PROVIDER=ollama` and wired as `LLMTriage`'s automatic middle fallback rung before `RuleBasedTriage` — the real three-tier chain the `triaged_by` column's own documented pattern (`llm:<provider>` / `rules` / `rules:fallback`) was designed around. Along the way, fixes a real observability bug this wiring would otherwise introduce: `GET /api/meta/providers`' `fallback` flag was a hardcoded `== "rules:fallback"` string match that would have silently miscounted a genuine Gemini→Ollama fallback as "not a fallback." See `docs/specs/phase-16-ollama-triage-and-fallback-chain.md`.
 
 ## Sequencing notes
 

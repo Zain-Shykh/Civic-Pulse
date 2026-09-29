@@ -1,5 +1,5 @@
 # Phase 16: Real OllamaTriage — standalone provider + LLMTriage's automatic fallback rung
-Status: not started
+Status: done. Implementation commit `bd8236b` on `dev`.
 Depends on: Phase 5b (`LLMTriage`, `redaction.py`, the retry/fallback shape this mirrors), Phase 6 (`services/complaints.py`'s own fallback-and-observability wiring), Phase 7 (`GET /api/meta/providers` route)
 Reads first: `docs/CONTRACTS.md` §2.5 (the `TriageProvider` interface, `triaged_by` pattern), `docs/architecture/ARCHITECTURE.md` (network segmentation, "backend is the only service that bridges edge/internal"), `docs/specs/phase-05b-llm-triage.md` (Open Question 1 — where this stub was deferred from), `backend/app/providers/triage/llm.py`, `backend/app/providers/triage/factory.py`, `backend/app/services/complaints.py`
 
@@ -150,3 +150,194 @@ Today's worst case, `LLMTriage` alone: two attempts at up to `_TIMEOUT_MS=10_000
 
 ## Ambiguity handling
 If anything here conflicts with `docs/CONTRACTS.md` or turns out underspecified once implementation actually starts — in particular, the real measured Ollama CPU latency turning out to make the 5-second budget (point 3) unrealistic, or the pinned `ollama/ollama:0.34.4` tag or `qwen2.5:0.5b` model tag turning out unavailable/renamed by the time this runs — stop and ask rather than silently adjusting and moving on.
+
+## As-Built
+
+Status: done. Implementation commit `bd8236b` on `dev`.
+
+The Plan above (points 1, 3, 4, 5) held as approved. Point 2 changed materially during implementation — real facts turned up by actually pulling the image and actually running the pull that the Plan's own research pass didn't and couldn't have caught by reading documentation alone. Each is disclosed below, not smoothed over. Two additional bugs (a third blind-relabel instance, and an unrelated pre-existing gap) were also found live and fixed.
+
+### Lint / type-check
+
+```
+$ ruff check app/ tests/
+All checks passed!
+$ mypy app/
+Success: no issues found in 33 source files
+```
+
+### Full suite, real throwaway containers
+
+```
+$ docker run -d --name civicpulse-p16-pg -e POSTGRES_USER=civicpulse -e POSTGRES_PASSWORD=civicpulse -e POSTGRES_DB=civicpulse -p 55432:5432 postgres:16-alpine
+$ docker run -d --name civicpulse-p16-redis -p 56379:6379 redis:7-alpine
+$ alembic upgrade head
+INFO  [alembic.runtime.migration] Running upgrade  -> be5a6b3416a1, create complaints table
+$ python -m app.scripts.seed
+Seed complete: 36 new row(s) inserted, 0 already present.
+$ TRIAGE_PROVIDER=simulated pytest --cov=app --cov-report=term-missing --cov-fail-under=65
+...
+app/providers/triage/factory.py        22      0   100%
+app/providers/triage/llm.py            55      3    95%   36, 45-46
+app/providers/triage/ollama.py         28      0   100%
+app/providers/triage/prompting.py       8      0   100%
+...
+TOTAL                                 599     31    95%
+Required test coverage of 65% reached. Total coverage: 94.82%
+======================= 184 passed, 2 warnings in 6.36s ========================
+```
+
+184 = 183 pre-existing (post Phase 15) + 1 new (`test_used_fallback_true_for_a_non_rules_fallback_outcome`, the third bug fix below — the other new/extended test files net out to the same 183 total since `test_factory_fails_fast_on_not_yet_implemented_ollama` was replaced by `test_factory_resolves_ollama`, not added alongside it).
+
+### The touched test files, verbose
+
+```
+$ pytest tests/test_ollama_triage.py tests/test_llm_triage.py tests/test_triage_providers.py tests/test_routes_complaints.py tests/test_services_complaints.py -v
+...
+tests/test_ollama_triage.py::TestSuccessPath::test_valid_structured_response_round_trips PASSED
+tests/test_ollama_triage.py::TestMalformedResponse::test_out_of_schema_response_falls_back PASSED
+tests/test_ollama_triage.py::TestConnectionFailures::test_timeout_falls_back_without_retry PASSED
+tests/test_ollama_triage.py::TestConnectionFailures::test_connect_error_falls_back PASSED
+tests/test_ollama_triage.py::TestConnectionFailures::test_server_error_falls_back PASSED
+tests/test_ollama_triage.py::TestPromptInjectionGuardrail::test_injection_attempt_still_yields_schema_valid_category PASSED
+tests/test_ollama_triage.py::TestRedaction::test_phone_and_email_redacted_before_outbound_request PASSED
+tests/test_ollama_triage.py::TestFactoryResolvesOllama::test_factory_resolves_ollama PASSED
+tests/test_ollama_triage.py::TestMandatoryDeterminism::test_provider_that_always_raises_falls_back_deterministically PASSED
+tests/test_llm_triage.py::TestWiredFallbackChain::test_gemini_failure_falls_through_to_ollama_success PASSED
+tests/test_llm_triage.py::TestWiredFallbackChain::test_gemini_and_ollama_both_fail_yields_rules_fallback PASSED
+tests/test_triage_providers.py::TestFactory::test_factory_resolves_ollama PASSED
+tests/test_triage_providers.py::TestFactory::test_factory_wires_ollama_as_llm_fallback PASSED
+tests/test_routes_complaints.py::TestMetaAndStats::test_fallback_flag_is_outcome_differs_from_active_provider PASSED
+tests/test_services_complaints.py::TestMandatoryDeterminism::test_used_fallback_true_for_a_non_rules_fallback_outcome PASSED
+...
+======================== 157 passed, 2 warnings in 2.23s =========================
+```
+
+(157 is these five files' own subtotal, not the full suite's 184 — every line shown above PASSED; only the wired-chain/fallback-flag-specific tests are excerpted here, the rest are the pre-existing per-provider unit tests carried over unchanged.)
+
+### Real deviation 1: the official `ollama/ollama:0.34.4` image is ~9.3GB, not pulled-and-accepted — a custom image was built instead
+
+Confirmed live, not assumed: `docker pull ollama/ollama:0.34.4` — **9.28GB disk, 3.75GB content**. This ran the test machine's disk from 94% to 99% full mid-pull and had to be aborted/cleaned up once, a real, disclosed operational cost the Plan's documentation-only research pass had no way to surface. Root cause, confirmed by downloading the real pinned `ollama-linux-amd64.tar.zst` release asset directly (not the Docker image): **1.4GB compressed → 2.1GB extracted**, of which `lib/ollama/cuda_v12` (1.2GB) + `cuda_v13` (812MB) + `vulkan` (41MB) = **~2.05GB** is GPU runner code, bundled unconditionally in the base Linux release tarball — the install script's GPU detection (`check_gpu`) only ever gates the *separate* ROCm (AMD) download, never CUDA, which ships in the base tarball regardless of host hardware. This design is deliberately CPU-only (`qwen2.5:0.5b`); none of that ~2GB is ever used.
+
+**Decision, made with the user (not unilaterally):** build a custom, minimal, CPU-only image (`ollama/Dockerfile`) rather than pull the official one or use a third-party pre-built alternative — keeps `triaged_by="llm:ollama"` honest (still the real upstream binary) without a supply-chain dependency on an unofficial account. `debian:bookworm-slim` base (glibc, matching the official binary's own build), two-stage build (`fetch` downloads and strips `cuda_v12`/`cuda_v13`/`vulkan` in the same layer; `runtime` copies only `bin/ollama` + the stripped `lib/ollama` into the official manual-install's own `/usr` layout), non-root `ollama` user, pinned `OLLAMA_VERSION=0.34.4` build arg (confirmed the real latest release via GitHub's API, published 2026-09-23 — no newer tag exists to pin to instead). Real resulting image, confirmed by building it:
+
+```
+$ docker build -t civicpulse-ollama:dev ./ollama
+...
+$ docker images civicpulse-ollama:dev
+IMAGE                   DISK USAGE   CONTENT SIZE
+civicpulse-ollama:dev   211MB        55.4MB
+```
+
+**~44x smaller than the official image.** Two real bugs found and fixed while actually running it, neither guessable from documentation alone:
+- The server defaults to binding `127.0.0.1` only — unreachable from any other container. Fixed with `ENV OLLAMA_HOST=0.0.0.0:11434` (the official image sets the same override for the same reason, confirmed after the fact).
+- A Compose-mounted named volume at a path that doesn't already exist in the image gets created root-owned, unwritable by the non-root user. Fixed by pre-creating and `chown`-ing `/usr/share/ollama/.ollama` in the same `RUN` that creates the user, confirmed by a real volume-mount test (`ls -la` inside the running container showing `ollama:ollama` ownership from first boot).
+
+**CI parity, decided with the user:** the new `civicpulse-ollama` image gets the identical treatment as `backend`/`frontend` — `ci.yml` builds and Trivy-scans it, `cd.yml` builds/pushes/SBOMs it to GHCR by commit SHA, `release.yml` re-tags it on a version tag. Real Trivy scan against the built image: **43 HIGH CVEs (0 CRITICAL)**, all inside the statically-linked binary's vendored Go stdlib/modules (`golang.org/x/crypto`, `x/net`, `x/mod`, `x/text`, `x/image`, `buger/jsonparser`), frozen at whatever versions upstream's own v0.34.4 build used — not reachable by any base-image or Dockerfile change on our side, and (confirmed) no newer upstream release exists to fix them. `ignore-unfixed: true` doesn't suppress them (fixed versions exist upstream, just not in a shipped ollama release yet). **Decided with the user:** a dated, scoped `ollama/.trivyignore` listing all 43 real CVE IDs, with the same class of justification `frontend/.trivyignore` already sets a precedent for (checked-today, no upgrade path, re-check later) — confirmed it actually suppresses everything:
+
+```
+$ trivy image --severity HIGH,CRITICAL --ignore-unfixed --ignorefile ollama/.trivyignore civicpulse-ollama:dev
+civicpulse-ollama:dev (debian 12.15)   0 vulnerabilities
+usr/bin/ollama                        0 vulnerabilities
+```
+
+### Real deviation 2: a real Docker/Go DNS bug, root-caused, changed `ollama-pull`'s network design entirely
+
+The Plan's point 2 (as revised and approved) had `ollama-pull` join both `edge` and `internal`, talking to the real `ollama` service over `OLLAMA_HOST=ollama:11434`. Live-testing this against the real Compose stack, the pull failed consistently:
+
+```
+Error: pull model manifest: Get "https://registry.ollama.ai/v2/library/qwen2.5/manifests/0.5b": dial tcp: lookup registry.ollama.ai on 127.0.0.11:53: server misbehaving
+```
+
+Investigated rather than patched-around with a blind retry: `getent ahosts registry.ollama.ai` (glibc) succeeded 100% of the time in the exact same container/network; the real `ollama pull` (the binary's own Go DNS resolver) failed consistently in the exact same container/network. `GODEBUG=netdns=cgo` did **not** fix it (tried, verified it made no difference — a dead end, disclosed rather than left in as dead configuration). Isolated the real variable with throwaway networks: a container joining one `internal: true` network plus one plain bridge network reliably failed the same real `ollama pull`; the identical container/image/command joining two *plain* bridge networks (no `internal: true` at all) reliably succeeded, every time. This is a real Docker/Go interaction — the `internal: true` flag itself, not general dual-homing, not flakiness — confirmed by isolating it as the only variable across repeated trials.
+
+**Fix:** redesigned `ollama-pull` to never need `internal` at all. `ollama/pull-model.sh` runs its own throwaway local `ollama serve` against the same shared `ollama_models` volume the real `ollama` service reads from, pulls the model directly into it, and exits — it never talks to the `ollama` service over the network. Confirmed end-to-end: a single-network (`edge`-only) puller wrote a real pulled model into a shared volume; a separately-started, `internal`-only `ollama` server, mounting the same volume, saw the model immediately with no restart:
+
+```
+$ docker exec real-ollama-server ollama list
+NAME            ID              SIZE      MODIFIED
+qwen2.5:0.5b    a8b0c5157701    397 MB    10 seconds ago
+```
+
+`ollama-pull` is now single-homed (`edge` only, no `depends_on` on `ollama` either — it never needed that service running, only the volume). This also reverts the Plan's earlier "`ollama-pull` also bridges edge/internal" disclosure in `ARCHITECTURE.md`/`README.md` — false again, in the good direction: `backend` really is the only service that bridges both networks, restored to its original wording.
+
+### Real deviation 3: the shared prompt needed real enrichment for a 0.5B model
+
+Live end-to-end testing (below) initially showed every standalone `TRIAGE_PROVIDER=ollama` request falling back to rules. The real cause: `qwen2.5:0.5b`'s bare `format: "json"` output under the original generic `SYSTEM_INSTRUCTION` ("classify into a category, priority, and one-line summary") consistently invented its own category ("emergency", not in the enum) and omitted `confidence` entirely — schema-invalid every time, confirmed by hitting the real running server directly and inspecting the raw response. Gemini never hit this because its `response_schema` parameter constrains generation structurally; Ollama's bare JSON mode only ever sees the prose. Fixed by enriching `prompting.py`'s shared `SYSTEM_INSTRUCTION` to explicitly name all four required keys and enumerate every valid `category`/`priority` value — confirmed against the real server, reliably schema-valid afterward (4/4 in a follow-up batch). Purely additive prompt content; harmlessly redundant for Gemini (which already gets the schema structurally), load-bearing for Ollama.
+
+### Real deviation 4: a third blind-relabel bug, found live, not in the original two
+
+While live-verifying the wired Gemini→Ollama fallback chain, `POST /api/complaints`'s own response reported `"used_fallback": false` for a request that had genuinely fallen back to `llm:ollama` — the exact same bug class as the Plan's point 1 (two instances), in a third location neither the request nor my own original review had caught: `services/complaints.py::submit_complaint`'s response dict hardcoded `"used_fallback": result.triaged_by == "rules:fallback"`. This field also drives the real `/metrics` `triage_fallback_total` Prometheus counter (`routes/complaints.py:52`), so the bug wasn't just a response-body cosmetic — it was silently undercounting a real observability metric. Fixed identically to the other two: `result.triaged_by != provider.name`. Confirmed against the real running stack, not just the new unit test:
+
+```
+$ curl ... # complaint whose active provider (llm:gemini) differs from its real outcome (llm:ollama)
+{"triaged_by":"llm:ollama", ..., "used_fallback":true, ...}
+$ curl http://backend:8000/metrics | grep triage_fallback
+triage_fallback_total 1.0
+```
+
+### Real deviation 5: an unrelated, pre-existing gap found and fixed as a byproduct
+
+Live-testing the Gemini→Ollama fallback required `TRIAGE_PROVIDER=llm` with a real (or deliberately invalid) `GEMINI_API_KEY` via `docker compose up`. This failed at container startup with `factory.py`'s own fail-fast `RuntimeError` — `compose.yaml`'s `backend` service never forwarded `GEMINI_API_KEY` to the container at all, a real, pre-existing gap unrelated to this phase (the README's own quickstart already promises "set `TRIAGE_PROVIDER=llm` and a real `GEMINI_API_KEY` in `.env`" — this was silently broken before Phase 16 touched anything). Fixed with a one-line addition (`GEMINI_API_KEY: ${GEMINI_API_KEY:-}`) so the promised behavior actually works; `compose.prod.yaml` already had this correctly (its `${VAR:?msg}` required-var syntax).
+
+### Live end-to-end verification, full chain, real stack
+
+**The regression check for point 2's fix — plain `docker compose up`, no profile:**
+
+```
+$ docker compose -p civicpulse up -d --build
+$ docker compose -p civicpulse ps
+NAME                    SERVICE    STATUS
+civicpulse-backend-1    backend    Up (healthy)
+civicpulse-frontend-1   frontend   Up (healthy)
+civicpulse-postgres-1   postgres   Up (healthy)
+civicpulse-redis-1      redis      Up (healthy)
+```
+
+Exactly the same five services as before Phase 16 — `ollama`/`ollama-pull` never created, no `--profile` flag passed. `POST /api/complaints` round-tripped correctly (`triaged_by: "rules"`).
+
+**Live, with the profile active — real pull, real server, real classifications:**
+
+```
+$ TRIAGE_PROVIDER=ollama docker compose -p civicpulse --profile ollama up -d --build
+$ docker wait civicpulse-ollama-pull-1
+0
+$ docker exec civicpulse-ollama-1 ollama list
+NAME            ID              SIZE      MODIFIED
+qwen2.5:0.5b    a8b0c5157701    397 MB    5 seconds ago
+```
+
+Standalone `TRIAGE_PROVIDER=ollama`, real complaints, after the prompt fix:
+
+```
+{"triaged_by":"llm:ollama","category":"water","priority":"normal", ...,"used_fallback":false, ...}   # 1.24s
+{"triaged_by":"llm:ollama","category":"other","priority":"high", ..., "used_fallback":false, ...}    # 0.88s
+```
+
+Wired Gemini→Ollama fallback (`TRIAGE_PROVIDER=llm`, `GEMINI_API_KEY` deliberately invalid to force the real failure path):
+
+```
+$ curl -X POST http://localhost:8080/api/complaints -d '{"text":"...transformer sparking near the park entrance.", ...}'
+{"triaged_by":"llm:ollama","category":"other","priority":"high",
+ "ai_summary":"New complaint about a rare incident near the park entrance, suspected to be due to a transformer sparking.",
+ "triage_latency_ms":1715,"used_fallback":false,"cache_hit":false}
+```
+
+Real measured latency: **1.715s** (Gemini's fast-fail on an auth error + Ollama's real inference) — nowhere near the Plan's disclosed ≈26.5s worst case; that number was always a *worst*-case bound, not a typical one, and this confirms it wasn't understated.
+
+`GET /api/meta/providers` against the same run, confirming point 1 and deviation 4's fixes together, live:
+
+```
+{"active_provider":"llm:gemini",
+ "recent_outcomes":[
+   {"provider":"llm:ollama","latency_ms":1715,"fallback":true},
+   {"provider":"llm:ollama","latency_ms":669,"fallback":true},
+   ...
+ ]}
+```
+
+`fallback: true` correctly reported for every `llm:ollama` outcome while `active_provider` is `llm:gemini` — the exact regression check point 1 named as "the concrete evidence," now real, not asserted.
+
+### Rubric / plan doc updates
+- `docs/RUBRIC-CHECKLIST.md` row 63 — updated (see that file's own diff).
+- `docs/IMPLEMENTATION-PLAN.md` — Phase 16 entry already added at Plan-commit time; no further change needed.
